@@ -1,0 +1,38 @@
+# Build directories
+build/
+build-release/
+cmake-build-debug/
+cmake-build-release/
+
+# Compiled libraries
+*.so
+*.dylib
+*.a
+*.o
+*.class
+*.jar
+
+# Java build
+build_java/
+
+# Executables
+apex_engine
+/build/apex_engine
+
+# FlatBuffers generated files
+generated/
+*_generated.*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake cache
+CMakeUserPresets.json
+CLAUDE.md
+SETUP_COMPLETE.md
+ULL_AUDIT_COMPLETE.md

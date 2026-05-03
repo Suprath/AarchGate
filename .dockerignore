@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+.github
+
+# Build Artifacts
+build/
+build-release/
+build-debug/
+build_java/
+cmake-build-debug/
+cmake-build-release/
+dist/
+
+# IDE Files
+.idea/
+.vscode/
+.clion/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled Objects & Libraries
+*.o
+*.a
+*.so
+*.dylib
+*.class
+*.jar
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Java Build Cache
+.gradle/
+.m2/
+
+# Marker Files
+SETUP_COMPLETE.md
+ULL_AUDIT_COMPLETE.md
+*_COMPLETE.md
+
+# CMake Cache
+CMakeUserPresets.json
+CMakeCache.txt

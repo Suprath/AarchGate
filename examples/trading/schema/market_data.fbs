@@ -1,0 +1,12 @@
+namespace apex.market;
+
+table Tick {
+  timestamp: uint64;
+  symbol_id: uint32;
+  padding: uint32;
+  bid: uint64;
+  ask: uint64;
+  volume: uint64;
+}
+
+root_type Tick;

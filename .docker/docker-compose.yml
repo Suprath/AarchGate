@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  aarchgate-build:
+    build:
+      context: ..
+      dockerfile: .docker/build.Dockerfile
+    image: aarchgate:latest
+    container_name: aarchgate-builder
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+      - aarchgate-build-cache:/workspace/build
+      - aarchgate-cmake-cache:/workspace/cmake-build-debug
+    environment:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      NINJA_STATUS: "[%f/%t] "
+      CXXFLAGS: "-O3 -march=native -ffast-math -fno-finite-math-only"
+      CC: clang
+      CXX: clang++
+      LD: lld
+    command: bash
+    stdin_open: true
+    tty: true
+
+volumes:
+  aarchgate-build-cache:
+  aarchgate-cmake-cache:

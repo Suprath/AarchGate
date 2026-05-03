@@ -1,0 +1,15 @@
+[submodule "external/asmjit"]
+	path = external/asmjit
+	url = https://github.com/asmjit/asmjit.git
+[submodule "external/highway"]
+	path = external/highway
+	url = https://github.com/google/highway.git
+[submodule "external/iceoryx"]
+	path = external/iceoryx
+	url = https://github.com/eclipse-iceoryx/iceoryx.git
+[submodule "external/flatbuffers"]
+	path = external/flatbuffers
+	url = https://github.com/google/flatbuffers.git
+[submodule "external/pybind11"]
+	path = external/pybind11
+	url = https://github.com/pybind/pybind11.git

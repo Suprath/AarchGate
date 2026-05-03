@@ -1,0 +1,45 @@
+NOTICE
+
+AarchGate is a universal bit-sliced logic synthesis engine for AArch64 utilizing
+the following third-party components, each governed by their respective permissive licenses:
+
+1. AsmJit (Zlib License)
+   - Purpose: JIT Code Generation
+   - Location: /external/asmjit
+   - License: Zlib License
+   - Repository: https://github.com/asmjit/asmjit
+
+2. Google Highway (Apache 2.0)
+   - Purpose: Portable SIMD Library
+   - Location: /external/highway (if integrated)
+   - License: Apache License, Version 2.0
+   - Repository: https://github.com/google/highway
+
+3. Eclipse iceoryx (Apache 2.0)
+   - Purpose: Zero-copy IPC Fabric
+   - Location: /external/iceoryx
+   - License: Apache License, Version 2.0
+   - Repository: https://github.com/eclipse-iceoryx/iceoryx
+
+4. FlatBuffers (Apache 2.0)
+   - Purpose: Memory-mapped Schemas and Zero-copy Serialization
+   - Location: /external/flatbuffers (if integrated)
+   - License: Apache License, Version 2.0
+   - Repository: https://github.com/google/flatbuffers
+
+5. pybind11 (BSD License)
+   - Purpose: Python Bindings for C++ Code
+   - Location: /external/pybind11
+   - License: BSD License
+   - Repository: https://github.com/pybind/pybind11
+
+All third-party components are licensed under permissive open-source licenses
+that allow for commercial and non-commercial use. For details on each license,
+see the LICENSE file in the respective component directory.
+
+---
+
+AarchGate v1.0.0
+Copyright (c) 2024-2026 Suprath PS. All rights reserved.
+Licensed under the Business Source License 1.1 until 2029-05-03,
+thereafter under the Apache License, Version 2.0.

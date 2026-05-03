@@ -1,0 +1,10 @@
+#ifndef APEX_VERSION_HPP
+#define APEX_VERSION_HPP
+
+#define APEX_VERSION_MAJOR 1
+#define APEX_VERSION_MINOR 0
+#define APEX_VERSION_PATCH 0
+#define APEX_VERSION_STRING "1.0.0-AarchGate"
+#define APEX_BUILD_NAME "AarchGate"
+
+#endif // APEX_VERSION_HPP

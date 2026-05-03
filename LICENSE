@@ -1,0 +1,129 @@
+Business Source License 1.1
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, and distribute the Licensed Work. Exceptions to these rights are specified
+in Section 1(d).
+
+If you receive Licensed Work from a Licensor (as opposed to creating it
+yourself), then you will owe the Licensor a fee for the use of the Licensed Work
+until the Change Date has occurred.
+
+1. Grant of Rights
+
+1.a) Subject to the terms and conditions of this License, the Licensor grants
+you a non-exclusive, royalty-free, world-wide, non-transferable license to copy,
+modify, create derivative works, redistribute, and make non-production use of the
+Licensed Work for the Term. The Licensor may make an Additional Use Grant, above,
+for the same behavior.
+
+1.b) If your use of the Licensed Work exceeds the scope of the Grant of Rights
+specified in Section 1(a), then you must cease this use and, by the date you
+cease this use, pay to the Licensor the fee, terms, and conditions for an
+appropriate commercial license. If you do not pay on time, then you are in breach
+of this License, and your rights will terminate on the earlier of (i) the date
+you pay the fee, or (ii) 30 calendar days after the date specified above. Failure
+to comply results in automatic termination of this License.
+
+1.c) The Licensor may specify additional Additional Use Grants for the same
+behavior to a different Licensee. The use of any such Additional Use Grant does
+not affect the terms of this License.
+
+1.d) If the Licensor includes in the Licensed Work a "NOTICE" text file as part
+of its distribution, then any Derivative Works that You distribute must include a
+readable copy of the attribution notices contained within such NOTICE file, unless
+such notices do not pertain to any part of the Derivative Works, in at least one
+of the following places: within a NOTICE text file distributed as part of the
+Derivative Works; within the Licensed Work itself (for example, as part of a
+header comment in source code); or, if the Derivative Work is not a text display
+(for example, a binary compiled into an executable file, or embedded in a
+document), then in such form as the Licensor reasonably requests.
+
+2. Change Date
+
+The "Change Date" is the earliest of the date the Licensor specifies in the
+notice in Exhibit A or 2029-05-01.
+
+3. Change License
+
+The "Change License" is Apache License, Version 2.0 as published by the Free
+Software Foundation.
+
+4. Effective on Change Date
+
+If specified in the notice in Exhibit A, the Licensor will re-license the
+Licensed Work under the Change License on the Change Date. Thereafter, the use
+of the Licensed Work will be governed by the terms and conditions of the Change
+License as published by the Free Software Foundation, with the benefit of the
+non-aggression clause contained in Section 2(a)(1) of the Covered Code section
+of the Mozilla Public License, Version 1.1 (available at
+http://www.mozilla.org/MPL/MPL-1.1.html), which is incorporated herein by
+reference. On the date the Licensor re-licenses the Licensed Work.
+
+5. Additional Terms
+
+5.a) If you include the Licensed Work (including as part of a Larger Work) in a
+publicly distributed derivative work or product, the Licensor may, by providing
+you a notice specifying an updated Change Date, modify the terms of this License
+by setting a new Change Date that is no more than 90 days in the future from when
+the notice is provided to you. The new Change Date will take effect on the latest
+of: (i) the Change Date specified in such notice; (ii) 90 days after the notice
+is provided to you; or (iii) on the date you first made the Licensed Work
+publicly available under these terms (such as via a public source code
+repository).
+
+5.b) If you choose not to accept the updated License terms, you may continue to
+use the Licensed Work under the terms of this License as it was before the
+License terms were updated; provided that you comply with all other terms of this
+License, including Sections 1.b and 1.c.
+
+5.c) The Licensor may also specify an Additional Use Grant for uses after the
+Change Date on the same basis as is done for uses before the Change Date.
+
+6. Term Termination
+
+6.a) Licensor may terminate this License if you are in material breach and you
+fail to cure the breach within 30 calendar days after becoming aware of the
+breach. Failure to pay the fee (if required) is a material breach.
+
+6.b) If all of your rights under Sections 1 and 2 terminate, but Sections 3-8
+and the Additional Use Grant remain in effect.
+
+7. Disclaimer of Warranties
+
+THE LICENSED WORK IS PROVIDED ON AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL
+WARRANTIES AND CONDITIONS, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY
+WARRANTIES OF TITLE, MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT.
+
+8. Limitation of Liability
+
+IN NO EVENT WILL LICENSOR BE LIABLE TO YOU ON ANY LEGAL THEORY (INCLUDING
+NEGLIGENCE) OR OTHERWISE FOR ANY SPECIAL, INDIRECT, INCIDENTAL, CONSEQUENTIAL,
+PUNITIVE OR EXEMPLARY DAMAGES ARISING OUT OF THIS LICENSE OR THE USE OF THE
+LICENSED WORK, EVEN IF LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGES.
+
+9. Governing Law
+
+This License will be governed by and construed in accordance with the laws of
+the jurisdiction in which the Licensor resides, excluding its conflicts of law
+provisions.
+
+EXHIBIT A
+
+Licensor: Suprath PS
+Licensed Work: Project Apex Universal Logic Engine
+Change Date: 2029-05-03
+Change License: Apache License, Version 2.0
+Additional Use Grant:
+
+"You may use the Licensed Work for any non-production purpose, including academic
+research, personal evaluation, and open-source development testing.
+
+Commercial Use—defined as using the Licensed Work to process production
+data-streams, providing paid analytics services, or integrating the Work into a
+commercial product in any sector (including but not limited to Finance,
+Cybersecurity, Industrial IoT, or Telecommunications)—requires a separate
+commercial license agreement from the Licensor."
