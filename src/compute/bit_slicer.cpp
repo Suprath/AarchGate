@@ -133,7 +133,9 @@ HWY_INLINE void Transpose64x64(uint64_t* HWY_RESTRICT A) {
 // ULL-Compliant: Zero heap, zero-copy in-place transpose, cache-aligned
 // Latency target: ~80ns per 64-row column
 HWY_INLINE void Slice_impl(const ColumnBuffer& in, ColumnBuffer& out) {
-    std::memcpy(out.data, in.data, sizeof(ColumnBuffer));
+    if (&in != &out) {
+        std::memcpy(out.data, in.data, sizeof(ColumnBuffer));
+    }
     Transpose64x64(out.data);
 }
 
