@@ -72,6 +72,14 @@ static void worker_thread(
     const size_t num_fields = config.fields.size();
     uint64_t total_matches = 0;
 
+    // Diagnostic: Ensure fields are populated
+    if (num_fields == 0) {
+        result->count = 0;
+        result->cycles = 0;
+        free(scratchpad);
+        return;
+    }
+
     // Start cycle counting for hot path (BITPLANE execution)
     uint64_t cycle_start = read_cycles();
 
@@ -120,10 +128,19 @@ static void worker_thread(
             field_planes[f] = field_buffers[f].data;
         }
 
-        // Execute JIT kernel — returns BITPLANE result as uint64_t bitmask
-        uint64_t mask = config.kernel(field_planes, scratchpad);
-        // Aggregate BITPLANE matches via popcnt
-        total_matches += static_cast<uint64_t>(__builtin_popcountll(mask));
+        // Execute JIT kernel — result depends on result_kind
+        uint64_t result = config.kernel(field_planes, scratchpad);
+
+        // Aggregate matches based on result kind
+        if (config.result_kind == 1) {  // BITMASK (1): popcnt the return value
+            total_matches += static_cast<uint64_t>(__builtin_popcountll(result));
+        } else if (config.result_kind == 0) {  // BITPLANE (0): Sum(popcount(Plane_i) * 2^i)
+            // Result is stored in scratchpad as 64 bit-planes
+            for (int i = 0; i < 64; ++i) {
+                uint64_t plane = scratchpad[i];
+                total_matches += (static_cast<uint64_t>(__builtin_popcountll(plane)) << i);
+            }
+        }
     }
 
     uint64_t cycle_end = read_cycles();

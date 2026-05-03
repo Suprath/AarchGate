@@ -270,6 +270,9 @@ uint64_t ApexEngine::execute_parallel(const void* data_ptr, size_t row_count, in
     config.fields = expr_logic.fields;
     config.row_stride = schema_it->second.row_stride;
     config.mode = expr_logic.mode;
+    config.result_kind = static_cast<int>(expr_logic.result_kind);
+    config.base_sum = expr_logic.base_sum;
+    config.delta_weights = expr_logic.delta_weights;
 
     return compute::ParallelRunner::run(data_ptr, row_count, config, num_threads);
 }

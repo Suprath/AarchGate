@@ -17,6 +17,9 @@ public:
         std::vector<const core::FieldDescriptor*> fields;
         size_t row_stride;
         ExecutionMode mode;
+        int result_kind;  // ir::ResultKind: 0=BITMASK, 1=SCALAR, 2=HYBRID
+        uint64_t base_sum;
+        std::vector<int64_t> delta_weights;
     };
 
     // Per-thread BITPLANE aggregation result with execution statistics

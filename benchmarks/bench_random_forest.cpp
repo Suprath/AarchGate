@@ -235,6 +235,9 @@ int main() {
         double ms = ((double)(end - start) / timer_freq) * 1000.0;
         parallel_times.push_back(ms);
 
+        // Accumulate matches to verify computation
+        result_sink.store(result_sink.load() + matches, std::memory_order_release);
+
         std::cout << "  Iteration " << (i + 1) << ": " << matches << " matches, "
                   << ms << " ms" << std::endl;
     }
