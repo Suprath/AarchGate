@@ -367,6 +367,17 @@ cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 
 # Set to performance mode
 echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+### AarchGate Environment Overrides
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `APEX_THREADS` | Manually specify core count | Auto-detected P-cores |
+| `APEX_LOG_LEVEL` | Logging verbosity (0-3) | 1 (Info) |
+
+Example:
+```bash
+APEX_THREADS=8 ./build/benchmarks/bench_tpch_q6
+```
 ```
 
 ### Real-Time Scheduler (Optional)

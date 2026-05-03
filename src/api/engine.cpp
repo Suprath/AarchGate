@@ -13,10 +13,34 @@
 #include <vector>
 #include <functional>
 #include <thread>
+#include <cstdlib>
+
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 namespace apex {
 
-ApexEngine::ApexEngine() noexcept = default;
+ApexEngine::ApexEngine() noexcept {
+    // Default to 4 (safe baseline)
+    num_threads_ = 4;
+
+#ifdef __APPLE__
+    // Auto-detect Performance Cores (P-cores) on Apple Silicon
+    int64_t perf_cores = 0;
+    size_t size = sizeof(perf_cores);
+    if (sysctlbyname("hw.perflevel0.logicalcpu", &perf_cores, &size, nullptr, 0) == 0) {
+        num_threads_ = (int)perf_cores;
+    }
+#endif
+
+    // Override with environment variable if present (e.g., APEX_THREADS=8)
+    const char* env_threads = std::getenv("APEX_THREADS");
+    if (env_threads) {
+        int count = std::atoi(env_threads);
+        if (count > 0) num_threads_ = count;
+    }
+}
 
 void ApexEngine::register_schema(std::string_view schema_name,
                                const std::vector<core::FieldDescriptor>& fields,
@@ -199,6 +223,7 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
 }
 
 uint64_t ApexEngine::execute_parallel(const void* data_ptr, size_t row_count, int num_threads) noexcept {
+    if (num_threads <= 0) num_threads = num_threads_;
     if (expr_logic_.empty()) return execute(data_ptr, row_count);
 
     auto meta_it = expr_logic_.begin();
@@ -245,6 +270,7 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
 }
 
 uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks, int num_threads) noexcept {
+    if (num_threads <= 0) num_threads = num_threads_;
     auto it = expr_logic_.find(std::string(schema_name));
     if (it == expr_logic_.end()) return 0;
     const auto& logic = it->second;

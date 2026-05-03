@@ -35,14 +35,18 @@ public:
                        ExecutionMode mode = ExecutionMode::BIT_SLICED) noexcept;
 
     uint64_t execute(const void* data_ptr, size_t row_count) noexcept;
-    uint64_t execute_parallel(const void* data_ptr, size_t row_count, int num_threads = 4) noexcept;
+    uint64_t execute_parallel(const void* data_ptr, size_t row_count, int num_threads = -1) noexcept;
 
     // Native Bit-Sliced Path: Zero-Overhead Silicon Limit
     // bit_planes: contiguous block of [num_blocks * num_fields * 64] uint64s
     // num_blocks: number of 64-row blocks to process
     uint64_t execute_native(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks) noexcept;
 
-    uint64_t execute_native_parallel(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks, int num_threads = 4) noexcept;
+    uint64_t execute_native_parallel(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks, int num_threads = -1) noexcept;
+
+    // Concurrency Control
+    void set_thread_count(int count) noexcept { num_threads_ = count; }
+    int get_thread_count() const noexcept { return num_threads_; }
 
     // Internal access for tests
     jit::JitCompiler& get_compiler() noexcept { return compiler_; }
@@ -83,6 +87,8 @@ private:
     // Performance buffers (pre-allocated to avoid heap churn)
     mutable std::array<compute::ColumnBuffer, 8> field_buffers_;
     mutable const uint64_t* field_planes_array_[8];
+
+    int num_threads_;
 
     uint64_t process_chunk_expr(const void* data_ptr,
                                size_t row_stride,

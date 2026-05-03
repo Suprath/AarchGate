@@ -273,36 +273,39 @@ uint64_t matches = apex_execute(engine, prices, count);
 ### Engine Wrapper
 
 ```cpp
-namespace apex {
-
-class Apex {
+class ApexEngine {
 public:
-    // Constructor: Creates engine, throws on failure
-    Apex();
+    // Constructor: Creates engine, auto-detects P-cores on Apple Silicon
+    ApexEngine();
     
     // Destructor: Destroys engine
-    ~Apex();
+    ~ApexEngine();
     
     // No copying allowed
-    Apex(const Apex&) = delete;
-    Apex& operator=(const Apex&) = delete;
+    ApexEngine(const ApexEngine&) = delete;
+    ApexEngine& operator=(const ApexEngine&) = delete;
     
     // Register schema with field vector
     void register_schema(
         const std::string& name,
-        const std::vector<apex_field_descriptor_t>& fields,
+        const std::vector<core::FieldDescriptor>& fields,
         size_t stride
     );
     
     // Set logic with execution mode
-    void set_logic(
+    void set_expression(
         const std::string& schema_name,
-        void* ir_root_ptr,
-        int mode = APEX_EXEC_MODE_BIT_SLICED
+        ir::Node* expr_root,
+        ExecutionMode mode = ExecutionMode::BIT_SLICED
     );
     
+    // Concurrency Control
+    void set_thread_count(int count);
+    int get_thread_count() const;
+
     // Execute: Returns match count, throws on error
     uint64_t execute(const void* data_ptr, size_t count);
+    uint64_t execute_parallel(const void* data_ptr, size_t count, int num_threads = -1);
 };
 
 } // namespace apex
@@ -763,6 +766,38 @@ for (int i = 0; i < num_batches; i++) {
 - Simple C++ loop
 - Per-row comparison
 - No SIMD, no JIT
+
+---
+
+## Concurrency & Core Management
+
+AarchGate is designed to saturate high-performance ARM64 silicon. The engine includes advanced logic to distinguish between **Performance Cores (P-cores)** and **Efficiency Cores (E-cores)** on Apple Silicon and modern ARM processors.
+
+### 1. Automatic Core Detection
+By default, the `ApexEngine` constructor probes the hardware topology:
+- **macOS (Apple M-Series)**: Uses `sysctl` to detect the exact number of P-cores.
+- **Default Behavior**: Sets the internal thread pool size to the P-core count to ensure maximum throughput without "straggler" jitter from E-cores.
+
+### 2. Manual Concurrency Control
+You can override the core usage through the following mechanisms:
+
+#### API (C++)
+```cpp
+engine.set_thread_count(8); // Explicitly use 8 threads
+```
+
+#### Environment Variable
+The `APEX_THREADS` variable overrides all default settings and API calls during engine initialization.
+```bash
+export APEX_THREADS=6
+./your_app
+```
+
+### 3. P-Core Isolation (QOS)
+All parallel execution threads are spawned with the `QOS_CLASS_USER_INTERACTIVE` priority. On macOS, this signals the kernel to:
+1.  Pin the thread to a Performance Core.
+2.  Maintain the highest possible CPU frequency (boost).
+3.  Minimize preemption by background system tasks.
 
 ---
 
