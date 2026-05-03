@@ -16,8 +16,8 @@ cmake-build-release/
 build_java/
 
 # Executables
-apex_engine
-/build/apex_engine
+AarchGate
+/build/AarchGate
 
 # FlatBuffers generated files
 generated/
