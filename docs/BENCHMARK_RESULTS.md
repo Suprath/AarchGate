@@ -50,4 +50,4 @@ The current results prove that we have reached the **General-Purpose CPU Limit**
 
 ---
 *Date of Test: 2026-05-03*
-*Hardware: Apple M3 (8-core), 24GB Unified Memory*
+*Hardware: Apple M3 (8-core), 16GB Unified Memory*
