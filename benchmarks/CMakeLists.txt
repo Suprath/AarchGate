@@ -23,9 +23,12 @@ if(highway_FOUND AND asmjit_FOUND)
     target_link_libraries(bench_aarchgate_final PRIVATE aarchgate)
     target_compile_options(bench_aarchgate_final PRIVATE ${APEX_COMPILE_FLAGS})
 
+    add_executable(bench_tpch_q6 bench_tpch_q6.cpp)
+    target_include_directories(bench_tpch_q6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    target_link_libraries(bench_tpch_q6 PRIVATE aarchgate)
+    target_compile_options(bench_tpch_q6 PRIVATE ${APEX_COMPILE_FLAGS})
 
-
-    message(STATUS "Benchmarks configured: bench_bit_slicer, bench_apex_final, bench_10b_tps")
+    message(STATUS "Benchmarks configured: bench_bit_slicer, bench_apex_final, bench_tpch_q6")
 else()
-    message(STATUS "Benchmarks: bench_apex_final and bench_10b_tps require Highway + AsmJit (not found)")
+    message(STATUS "Benchmarks: bench_apex_final and bench_tpch_q6 require Highway + AsmJit (not found)")
 endif()

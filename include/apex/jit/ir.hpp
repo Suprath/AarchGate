@@ -15,6 +15,8 @@ enum class NodeKind : uint8_t {
     SUB,      // Arithmetic sub (2's complement)
     GT,       // Greater-than comparison
     LT,       // Less-than comparison
+    GE,       // Greater-than-or-equal comparison
+    LE,       // Less-than-or-equal comparison
     EQ,       // Equal comparison
     AND,      // Logical AND of masks
     OR,       // Logical OR of masks
@@ -76,6 +78,8 @@ APEX_API ir::Node* Add(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* Sub(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* GT(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* LT(ir::Node* a, ir::Node* b) noexcept;
+APEX_API ir::Node* GE(ir::Node* a, ir::Node* b) noexcept;
+APEX_API ir::Node* LE(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* EQ(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* And(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* Or(ir::Node* a, ir::Node* b) noexcept;

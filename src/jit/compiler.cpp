@@ -249,6 +249,8 @@ struct ExpressionAnalyzer {
 
             case ir::NodeKind::GT:
             case ir::NodeKind::LT:
+            case ir::NodeKind::GE:
+            case ir::NodeKind::LE:
             case ir::NodeKind::EQ:
             case ir::NodeKind::AND:
             case ir::NodeKind::OR:
@@ -334,9 +336,9 @@ ExprKernelFunc JitCompiler::compile_expression(
     Gp field_planes_ptr = x19;  // Callee-saved: field_planes_array (set in prologue)
     Gp scratch_ptr = x20;       // Callee-saved: scratchpad (set in prologue)
     Gp bit_index = x15;         // JIT loop counter: 0→63 (non-callee-saved)
-    Gp plane_a = x2;
-    Gp plane_b = x3;
-    Gp temp_ptr = x4;           // Temporary for field pointer loads
+    Gp plane_a = x16;           // Use IP0 (non-callee-saved)
+    Gp plane_b = x17;           // Use IP1 (non-callee-saved)
+    Gp temp_ptr = x1;           // x4 is used in cmp_gt_regs, use x1 instead
     Gp result = x5;             // Arithmetic result
     Gp scratch1 = x6;           // Scratch register 1
     Gp scratch2 = x7;           // Scratch register 2
@@ -460,7 +462,9 @@ ExprKernelFunc JitCompiler::compile_expression(
     std::vector<ir::Node*> comparison_nodes;
     std::function<void(ir::Node*)> collect_comparisons = [&](ir::Node* node) {
         if (!node) return;
-        if (node->kind == ir::NodeKind::GT || node->kind == ir::NodeKind::LT || node->kind == ir::NodeKind::EQ) {
+        if (node->kind == ir::NodeKind::GT || node->kind == ir::NodeKind::LT || 
+            node->kind == ir::NodeKind::GE || node->kind == ir::NodeKind::LE || 
+            node->kind == ir::NodeKind::EQ) {
             comparison_nodes.push_back(node);
             return;
         }
@@ -472,13 +476,13 @@ ExprKernelFunc JitCompiler::compile_expression(
     collect_comparisons(root);
 
     // Allocate registers for comparison state (avoiding IP0/IP1 x16/x17)
-    // Safe scratch: x8, x9, x10, x11, x12, x13
-    std::vector<Gp> cmp_gt_regs = {x8, x10, x12};
-    std::vector<Gp> cmp_eq_regs = {x9, x11, x13}; 
+    // Safe scratch: x2, x3, x4, x5, x8, x9, x10, x11, x12, x13 (x6, x7 used by CircuitLibrary)
+    std::vector<Gp> cmp_gt_regs = {x2, x4, x8, x10, x12};
+    std::vector<Gp> cmp_eq_regs = {x3, x5, x9, x11, x13}; 
 
     // Initialize GT and EQ masks for each comparison
     int num_comparisons = static_cast<int>(comparison_nodes.size());
-    for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 3; ++cmp_idx) {
+    for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 5; ++cmp_idx) {
         a.mov(cmp_gt_regs[cmp_idx], 0);    // GT starts at 0
         a.mvn(cmp_eq_regs[cmp_idx], xzr); // EQ starts at all 1s
     }
@@ -513,19 +517,24 @@ ExprKernelFunc JitCompiler::compile_expression(
     };
 
     // Process each comparison independently using pre-allocated registers
-    for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 3; ++cmp_idx) {
+    for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 5; ++cmp_idx) {
         ir::Node* cmp_node = comparison_nodes[cmp_idx];
         Gp cmp_gt = cmp_gt_regs[cmp_idx];
         Gp cmp_eq = cmp_eq_regs[cmp_idx];
 
-        if (cmp_node->kind == ir::NodeKind::LT) {
+        if (cmp_node->kind == ir::NodeKind::LT || cmp_node->kind == ir::NodeKind::LE) {
             get_bit(cmp_node->left, plane_a);
             get_bit(cmp_node->right, plane_b);
             // LT(A, B) = GT(B, A)
             CircuitLibrary::emit_gt_64(a, plane_b, plane_a, cmp_gt, cmp_eq);
-        } else if (cmp_node->kind == ir::NodeKind::GT) {
+        } else if (cmp_node->kind == ir::NodeKind::GT || cmp_node->kind == ir::NodeKind::GE) {
             get_bit(cmp_node->left, plane_a);
             get_bit(cmp_node->right, plane_b);
+            CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
+        } else if (cmp_node->kind == ir::NodeKind::EQ) {
+            get_bit(cmp_node->left, plane_a);
+            get_bit(cmp_node->right, plane_b);
+            // GT part of emit_gt_64 will be ignored for EQ, we only need cmp_eq
             CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
         }
     }
@@ -534,12 +543,25 @@ ExprKernelFunc JitCompiler::compile_expression(
     a.b(phase2_loop_start);
     a.bind(phase2_loop_end);
 
-    // AND-fold all GT masks to produce final result
+    // AND-fold all GT/GE/LE/EQ masks to produce final result
     Gp final_result = x0;
     if (num_comparisons >= 1) {
-        a.mov(final_result, cmp_gt_regs[0]);
-        for (int i = 1; i < num_comparisons && i < 3; ++i) {
-            a.and_(final_result, final_result, cmp_gt_regs[i]);
+        auto emit_final_mask = [&](int idx, Gp& out) {
+            ir::NodeKind kind = comparison_nodes[idx]->kind;
+            if (kind == ir::NodeKind::GT || kind == ir::NodeKind::LT) {
+                a.mov(out, cmp_gt_regs[idx]);
+            } else if (kind == ir::NodeKind::GE || kind == ir::NodeKind::LE) {
+                a.orr(out, cmp_gt_regs[idx], cmp_eq_regs[idx]);
+            } else if (kind == ir::NodeKind::EQ) {
+                a.mov(out, cmp_eq_regs[idx]);
+            }
+        };
+
+        emit_final_mask(0, final_result);
+        for (int i = 1; i < num_comparisons && i < 5; ++i) {
+            Gp temp_mask = x14; // Use scratch3 as temp for ANDing
+            emit_final_mask(i, temp_mask);
+            a.and_(final_result, final_result, temp_mask);
         }
     } else {
         // No comparisons: return all ones
@@ -603,9 +625,9 @@ ExprKernelFunc JitCompiler::compile_scalar_expression(
     // Working registers
     Gp final_mask = x19;
     Gp row_index = x20;
-    Gp temp_ptr = x4;
-    Gp val_left = x2;
-    Gp val_right = x3;
+    Gp temp_ptr = x1;
+    Gp val_left = x16;
+    Gp val_right = x17;
     Gp val_res = x5;
 
     // Prologue
@@ -668,6 +690,14 @@ ExprKernelFunc JitCompiler::compile_scalar_expression(
             case ir::NodeKind::LT:
                 a.cmp(val_left, val_right);
                 a.cset(val_res, asmjit::a64::CondCode::kLO); // Unsigned LT
+                break;
+            case ir::NodeKind::GE:
+                a.cmp(val_left, val_right);
+                a.cset(val_res, asmjit::a64::CondCode::kHS); // Unsigned GE
+                break;
+            case ir::NodeKind::LE:
+                a.cmp(val_left, val_right);
+                a.cset(val_res, asmjit::a64::CondCode::kLS); // Unsigned LE
                 break;
             case ir::NodeKind::EQ:
                 a.cmp(val_left, val_right);
