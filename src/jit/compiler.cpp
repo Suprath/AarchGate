@@ -650,7 +650,7 @@ ExprKernelFunc JitCompiler::compile_scalar_expression(
     // Working registers
     Gp final_mask = x19;
     Gp row_index = x20;
-    Gp temp_ptr = x1;
+    Gp temp_ptr = x2;
     Gp val_left = x16;
     Gp val_right = x17;
     Gp val_res = x5;

@@ -17,12 +17,12 @@ struct alignas(64) GenericRecord {
 int main() {
     std::cout << "=== Universal C++ SDK Verification Test ===" << std::endl;
     
-    Apex engine;
+    ApexEngine engine;
 
-    std::vector<apex_field_descriptor_t> fields = {
-        {"Field0", offsetof(GenericRecord, field0), 64, 3}, // UINT64
-        {"Field1", offsetof(GenericRecord, field1), 64, 3},
-        {"Field2", offsetof(GenericRecord, field2), 64, 3}
+    std::vector<core::FieldDescriptor> fields = {
+        {"Field0", (uint32_t)offsetof(GenericRecord, field0), 64, core::DataType::UINT64},
+        {"Field1", (uint32_t)offsetof(GenericRecord, field1), 64, core::DataType::UINT64},
+        {"Field2", (uint32_t)offsetof(GenericRecord, field2), 64, core::DataType::UINT64}
     };
     engine.register_schema("GenericSchema", fields, sizeof(GenericRecord));
 
@@ -33,7 +33,7 @@ int main() {
     auto f2 = builder::Load("Field2");
     auto root = builder::GT(sum, f2);
 
-    engine.set_logic("GenericSchema", root, APEX_EXEC_MODE_SCALAR);
+    engine.set_expression("GenericSchema", root, ExecutionMode::SCALAR);
 
     const size_t num_rows = 1000000;
     std::vector<GenericRecord> dataset(num_rows);
@@ -58,14 +58,14 @@ int main() {
     const size_t odd_stride = 21;
     std::vector<uint8_t> odd_dataset(num_rows * odd_stride);
     
-    std::vector<apex_field_descriptor_t> odd_fields = {
-        {"Odd0", 0, 64, 3},   // Offset 0
-        {"Odd1", 9, 64, 3}    // Offset 9 (Un-aligned!)
+    std::vector<core::FieldDescriptor> odd_fields = {
+        {"Odd0", 0, 64, core::DataType::UINT64},   // Offset 0
+        {"Odd1", 9, 64, core::DataType::UINT64}    // Offset 9 (Un-aligned!)
     };
     engine.register_schema("OddSchema", odd_fields, odd_stride);
     
     auto logic_odd = builder::GT(builder::Load("Odd0"), builder::Load("Odd1"));
-    engine.set_logic("OddSchema", logic_odd, APEX_EXEC_MODE_BIT_SLICED);
+    engine.set_expression("OddSchema", logic_odd, ExecutionMode::BIT_SLICED);
 
     for (size_t i = 0; i < num_rows; ++i) {
         uint8_t* row = &odd_dataset[i * odd_stride];
