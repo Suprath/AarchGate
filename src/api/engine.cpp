@@ -100,8 +100,21 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     }
     fields.resize(max_idx);
 
+    uint64_t base_sum = 0;
+    std::vector<int64_t> delta_weights;
+    if (expr_root && expr_root->kind == ir::NodeKind::SUM) {
+        for (auto* op : expr_root->operands) {
+            if (op->kind == ir::NodeKind::SELECT) {
+                uint64_t w1 = op->left->const_value;
+                uint64_t w2 = op->right->const_value;
+                base_sum += w2;
+                delta_weights.push_back(static_cast<int64_t>(w1) - static_cast<int64_t>(w2));
+            }
+        }
+    }
+
     std::string expr_key = std::string(schema_name);
-    ExprCompiledLogic compiled = {kernel, fields, mode, expr_root->result_kind};
+    ExprCompiledLogic compiled = {kernel, fields, mode, expr_root->result_kind, base_sum, std::move(delta_weights)};
     expr_logic_[expr_key] = std::move(compiled);
 }
 
@@ -190,14 +203,20 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
             for (size_t chunk = 0; chunk * 64 < row_count; chunk++) {
                 const void* chunk_ptr = base + chunk * 64 * row_stride;
                 size_t rows_in_chunk = std::min(size_t(64), row_count - chunk * 64);
-
-                std::memset(scratchpad, 0, 1024 * 64 * sizeof(uint64_t));
                 uint64_t chunk_mask = process_chunk_expr(chunk_ptr, row_stride, rows_in_chunk, expr_logic, scratchpad);
 
                 if (expr_logic.result_kind == ir::ResultKind::BITMASK) {
                     total_matches += static_cast<uint64_t>(__builtin_popcountll(chunk_mask));
+                } else if (!expr_logic.delta_weights.empty()) {
+                    // HYBRID POPCOUNT AGGREGATOR
+                    int64_t chunk_sum = static_cast<int64_t>(expr_logic.base_sum) * rows_in_chunk;
+                    for (size_t i = 0; i < expr_logic.delta_weights.size(); ++i) {
+                        int64_t pop = __builtin_popcountll(scratchpad[i]);
+                        chunk_sum += pop * expr_logic.delta_weights[i];
+                    }
+                    total_matches += static_cast<uint64_t>(chunk_sum);
                 } else {
-                    // BITPLANE: Sum(popcount(Plane_i) * 2^i)
+                    // BITPLANE (Legacy): Sum(popcount(Plane_i) * 2^i)
                     for (int i = 0; i < 64; ++i) {
                         uint64_t plane = scratchpad[i];
                         total_matches += (static_cast<uint64_t>(__builtin_popcountll(plane)) << i);

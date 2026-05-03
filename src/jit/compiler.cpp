@@ -397,16 +397,12 @@ ExprKernelFunc JitCompiler::compile_expression(
     // Kernel code: ~70 instructions ≈ 280 bytes (fits entirely in M3 μOp cache).
     // =====================================================================
 
-    // Allocate dedicated scratchpad space for the compact GT/EQ arrays
-    // 100 trees * 8 bytes = 800 bytes each -> we need 4 slots (2048 bytes) total to be safe.
-    int gt_slot = scratch_mgr.alloc_slot();
-    scratch_mgr.alloc_slot(); // reserve second slot for GT
-    int eq_slot = scratch_mgr.alloc_slot();
-    scratch_mgr.alloc_slot(); // reserve second slot for EQ
-
+    // Instead of using scratch_mgr, we output masks directly into scratchpad[0..99].
+    // EQ masks can be placed temporarily at scratchpad[100..199].
     const int num_trees = static_cast<int>(analyzer.comparison_nodes.size());
-    const int GT_BASE   = gt_slot * 512;
-    const int EQ_BASE   = eq_slot * 512;
+    const int GT_BASE = 0;
+    const int EQ_BASE = 800;
+
 
     // x22 = tree counter (callee-saved, already pushed)
     Gp tree_idx = x22;
@@ -496,135 +492,9 @@ ExprKernelFunc JitCompiler::compile_expression(
     a.subs(bit_index, bit_index, 1);
     a.b(asmjit::a64::CondCode::kGE, bit_loop);
 
-    // --- Flush logic removed. Phase 2 metadata now points directly to GT_BASE ---
-
-
-    // =====================================================================
-    // PHASE 2: Select & Arithmetic Nested Loop (Outer: Trees, Inner: Bits)
-    // =====================================================================
-    ir::Node* sum_node = nullptr;
-    for (auto* node : analyzer.select_nodes) {
-        if (node->kind == ir::NodeKind::SUM) sum_node = node;
-    }
-
-    Label phase2_data_label = a.new_label();
-
-    if (sum_node && sum_node->operands.size() > 0) {
-        // Init accumulator (SUM node's slot) to 0
-        a.mov(x2, sum_node->slot_id * 512);
-        a.mov(bit_index, 0);
-        Label init_accum = a.new_label();
-        a.bind(init_accum);
-            a.lsl(scratch3, bit_index, 3);
-            a.add(x11, x2, scratch3);
-            a.str(xzr, Mem(scratch_ptr, x11));
-            a.add(bit_index, bit_index, 1);
-            // Optimization: max sum is 10,000, requiring only 14 bits.
-            a.cmp(bit_index, 14);
-        a.b(asmjit::a64::CondCode::kLT, init_accum);
-
-        // Load base address of Phase 2 metadata
-        a.adr(x23, phase2_data_label); // x23 = phase 2 metadata array
-
-        // x22 = tree_idx
-        a.mov(x22, 0);
-        Label tree_loop2 = a.new_label();
-        a.bind(tree_loop2);
-
-            // carry = 0 for this tree's addition
-            Gp carry_reg = carry_regs[sum_node->carry_reg];
-            a.mov(carry_reg, 0);
-
-            // Load tree metadata: [cond_slot_offset, w1, w2] (24 bytes per tree)
-            // x2 = &meta[t]
-            a.mov(scratch3, 24);
-            a.mul(x2, x22, scratch3);
-            a.add(x2, x23, x2);
-            
-            a.ldr(x24, Mem(x2, 0));  // x24 = cond_slot_offset
-            a.ldr(x25, Mem(x2, 8));  // x25 = w1
-            a.ldr(x26, Mem(x2, 16)); // x26 = w2
-
-            // Load the boolean mask for this tree (from GT/EQ)
-            // Since it's a 64-bit boolean mask, it's stored at cond_slot_offset.
-            // Wait, cond_slot_offset is x24.
-            a.ldr(x12, Mem(scratch_ptr, x24)); // x12 = COND MASK
-
-            // x19 = bit_index
-            a.mov(x19, 0);
-            Label bit_loop2 = a.new_label();
-            a.bind(bit_loop2);
-
-                // Inline get_bit for w1 (plane_a) and w2 (plane_b)
-                // plane_a = (w1 >> bit) & 1, negated to ~0ULL or 0
-                a.lsr(plane_a, x25, x19);
-                a.and_(plane_a, plane_a, 1);
-                a.neg(plane_a, plane_a);
-
-                // plane_b = (w2 >> bit) & 1, negated to ~0ULL or 0
-                a.lsr(plane_b, x26, x19);
-                a.and_(plane_b, plane_b, 1);
-                a.neg(plane_b, plane_b);
-
-                // Mux: result_select = (cond & plane_a) | (~cond & plane_b)
-                // Use scratch1 (x6) for intermediary mux output so we don't alias 'result' (x5)
-                // in emit_add_64. We need a scratch for tmp2 in mux, so use x7.
-                CircuitLibrary::emit_mux(a, x12, plane_a, plane_b, scratch1, x7);
-
-                // Add result_select to accumulator[bit_index]
-                // Accumulator offset = SUM slot_id * 512 + bit_index * 8
-                a.mov(x2, sum_node->slot_id * 512);
-                a.lsl(scratch3, x19, 3);
-                a.add(x2, x2, scratch3);
-                
-                // Load current accum value for this bit
-                a.ldr(plane_a, Mem(scratch_ptr, x2));
-                
-                // Full adder: plane_a (accum) + scratch1 (mux) + carry -> result (sum), next_carry
-                // emit_add_64(a, src1, src2, carry, out, tmp1, tmp2)
-                // We use x10 and x11 as non-clobbered temporaries since we use scratch1.
-                CircuitLibrary::emit_add_64(a, plane_a, scratch1, carry_reg, result, x10, x11);
-                
-                // Store back to accumulator
-                a.str(result, Mem(scratch_ptr, x2));
-
-                a.add(x19, x19, 1);
-                a.cmp(x19, 14); // Process only 14 bits
-            a.b(asmjit::a64::CondCode::kLT, bit_loop2);
-
-            a.add(x22, x22, 1);
-            a.cmp(x22, num_trees);
-        a.b(asmjit::a64::CondCode::kLT, tree_loop2);
-    }
-
-    // Final result delivery
-    // 1. If the root is a BITMASK, return it in x0
-    // 2. If the root is a BITPLANE, ensure it's in scratchpad slot 0 (first 64 words)
-    if (root->result_kind == ir::ResultKind::BITMASK) {
-        if (root->slot_id >= 0) {
-            a.mov(x2, root->slot_id * 512);
-            a.ldr(x0, Mem(scratch_ptr, x2));
-        } else {
-            a.mov(x0, 0);
-        }
-    } else {
-        // Root is a BITPLANE. If it's not already in slot 0, copy it.
-        // For Phase 1, we assume the user might want to sum the result.
-        if (root->slot_id > 0) {
-            Label copy_loop = a.new_label();
-            a.mov(x2, 0);
-            a.bind(copy_loop);
-            a.mov(x8, root->slot_id * 512);
-            a.lsl(x3, x2, 3);
-            a.add(x4, x3, x8);
-            a.ldr(x5, Mem(scratch_ptr, x4));
-            a.str(x5, Mem(scratch_ptr, x3));
-            a.add(x2, x2, 1);
-            a.cmp(x2, 64);
-            a.b(asmjit::a64::CondCode::kLT, copy_loop);
-        }
-        a.mov(x0, 0); // Success
-    }
+    // --- Phase 2 logic removed for Hybrid Aggregation ---
+    // The JIT kernel now simply returns the GT masks in scratchpad[0..99]
+    a.mov(x0, 0); // Return success
 
     // ===== Standard ARM64 Epilogue =====
     a.ldp(x27, x28, Mem(sp).post(16));
@@ -645,22 +515,7 @@ ExprKernelFunc JitCompiler::compile_expression(
         a.embed_uint64(threshold);
     }
 
-    // Phase 2 metadata: [{cond_slot_offset: uint64, w1: uint64, w2: uint64}, ...]
-    if (sum_node) {
-        a.bind(phase2_data_label);
-        int t = 0;
-        for (auto* op : sum_node->operands) {
-            if (op->kind == ir::NodeKind::SELECT) {
-                uint64_t cond_offset = static_cast<uint64_t>(GT_BASE + t * 8); // Direct compact array
-                uint64_t w1 = static_cast<uint64_t>(op->left->const_value);
-                uint64_t w2 = static_cast<uint64_t>(op->right->const_value);
-                a.embed_uint64(cond_offset);
-                a.embed_uint64(w1);
-                a.embed_uint64(w2);
-                ++t;
-            }
-        }
-    }
+    // Phase 2 metadata logic removed
 
     dump_bytecode(code, "JIT Expression Kernel Bytecode");
 

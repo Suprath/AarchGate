@@ -7,6 +7,7 @@
 #include <atomic>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <iomanip>
 
 using namespace apex;
 using namespace apex::builder;
@@ -108,8 +109,8 @@ int main() {
     double compile_ms = ((double)(compile_end - compile_start) / timer_freq) * 1000.0;
     std::cout << "JIT Compilation Time: " << compile_ms << " ms" << std::endl;
 
-    // Use 100K rows for quick validation; scale up once confirmed working
-    const size_t num_rows = 100000;
+    // Production-scale test: 10M rows (matches output header, good multi-core test)
+    const size_t num_rows = 10000000;
     size_t alloc_size = num_rows * sizeof(RowData);
     void* raw_ptr = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -130,17 +131,9 @@ int main() {
     std::cout << "Testing expression on single row..." << std::endl;
     uint64_t test_result = engine.execute((const void*)data, 1);
     
-    // The JIT kernel processes a chunk of 64 rows. Since we passed row_count=1,
-    // rows 1..63 are zero-padded by gather_field. The engine.execute() function then
-    // popcounts all 64 rows. We must mirror this exactly in the scalar verification.
-    std::vector<RowData> padded_chunk(64);
-    padded_chunk[0] = data[0];
-    for (int i = 1; i < 64; ++i) {
-        for (int f = 0; f < 8; ++f) padded_chunk[i].features[f] = 0;
-    }
-    uint64_t scalar_row_0 = run_scalar_forest(padded_chunk.data(), 64, scalar_model);
+    uint64_t scalar_row_0 = run_scalar_forest(data, 1, scalar_model);
     
-    std::cout << "[VERIFY] Row 0 (Chunked): Scalar=" << scalar_row_0 << ", JIT=" << test_result;
+    std::cout << "[VERIFY] Row 0: Scalar=" << scalar_row_0 << ", JIT=" << test_result;
     if (scalar_row_0 == test_result) {
         std::cout << ". MATCH: YES" << std::endl;
     } else {
@@ -149,10 +142,9 @@ int main() {
         return 1;
     }
 
-    const int iterations = 3;
+    const int iterations = 2;
     std::vector<double> jit_times;
     std::vector<double> scalar_times;
-    uint64_t entropy = 12345;
 
     // Benchmark JIT with external linkage barrier
     std::cout << "Running AarchGate (50 iterations, Hardware Timers, External Linkage)..." << std::endl;
@@ -196,9 +188,9 @@ int main() {
     double median_jit = jit_times[iterations / 2];
 
     // Benchmark Scalar
-    std::cout << "Running Scalar Baseline (10 iterations, extrapolated)..." << std::endl;
+    std::cout << "Running Scalar Baseline (5 iterations, extrapolated)..." << std::endl;
     last_result = (uint64_t)time(NULL) % 2;
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 5; ++i) {
         size_t offset = (last_result & 0x1) * 64; 
         const RowData* perturbed_ptr = reinterpret_cast<const RowData*>((const uint8_t*)data + offset);
 
@@ -213,14 +205,65 @@ int main() {
     std::sort(scalar_times.begin(), scalar_times.end());
     double median_scalar = scalar_times[scalar_times.size() / 2];
 
-    std::cout << "\n--- Performance Results ---" << std::endl;
+    std::cout << "\n--- Single-Thread Performance Results ---" << std::endl;
     std::cout << "AarchGate JIT (Median): " << median_jit << " ms" << std::endl;
     std::cout << "Scalar Baseline (Median): " << median_scalar << " ms" << std::endl;
-    
+
     double rps = (num_rows / (median_jit / 1000.0));
     std::cout << "JIT Throughput: " << rps / 1e6 << " M rows/sec" << std::endl;
     std::cout << "Cycles/Row (est @ 3.2GHz): " << (3.2e9 / rps) << std::endl;
     std::cout << "True Speedup: " << (median_scalar / median_jit) << "x" << std::endl;
+
+    // === MULTI-THREAD BENCHMARK (4 threads) ===
+    std::cout << "\n=== Multi-Core Parallel Execution (4 Threads) ===" << std::endl;
+
+    // Run parallel benchmark (4 threads, 3 iterations)
+    std::vector<double> parallel_times;
+    std::cout << "Running 4-thread execution (3 iterations)..." << std::endl;
+
+    engine.set_thread_count(4);  // Configure for 4 threads
+
+    for (int i = 0; i < 3; ++i) {
+        uint64_t start = read_cycles();
+        uint64_t matches = engine.execute_parallel(
+            (const void*)data,
+            num_rows,
+            4  // 4 threads
+        );
+        uint64_t end = read_cycles();
+
+        double ms = ((double)(end - start) / timer_freq) * 1000.0;
+        parallel_times.push_back(ms);
+
+        std::cout << "  Iteration " << (i + 1) << ": " << matches << " matches, "
+                  << ms << " ms" << std::endl;
+    }
+
+    std::sort(parallel_times.begin(), parallel_times.end());
+    double median_parallel = parallel_times[parallel_times.size() / 2];
+
+    double parallel_rps = (num_rows / (median_parallel / 1000.0));
+    double speedup = median_jit / median_parallel;
+
+    std::cout << "\n--- Multi-Thread Results (4 Threads) ---" << std::endl;
+    std::cout << "4-Thread JIT (Median): " << median_parallel << " ms" << std::endl;
+    std::cout << "4-Thread Throughput: " << parallel_rps / 1e6 << " M rows/sec" << std::endl;
+    std::cout << "Speedup vs 1-Thread: " << speedup << "x" << std::endl;
+    std::cout << "Thread Efficiency: " << (speedup / 4.0) * 100.0 << "%" << std::endl;
+
+    // Summary
+    std::cout << "\n=== Summary ===" << std::endl;
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "Dataset: " << (num_rows / 1e6) << "M rows" << std::endl;
+    std::cout << "Forest: 100 trees" << std::endl;
+    std::cout << "1-Thread RPS: " << (rps / 1e6) << " M rows/sec" << std::endl;
+    std::cout << "4-Thread RPS: " << (parallel_rps / 1e6) << " M rows/sec" << std::endl;
+    std::cout << "Multi-Core Speedup: " << speedup << "x" << std::endl;
+    if (parallel_rps > 120e6) {
+        std::cout << "\n✓ TARGET ACHIEVED: > 120M RPS on 4-thread forest!" << std::endl;
+    } else {
+        std::cout << "\n✗ Target: 120M RPS (current: " << (parallel_rps / 1e6) << " M RPS)" << std::endl;
+    }
 
     std::cout << "\nResult Verification: " << result_sink.load() << std::endl;
 

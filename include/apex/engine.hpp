@@ -75,6 +75,10 @@ private:
         std::vector<const core::FieldDescriptor*> fields; // Maps index to descriptor
         ExecutionMode mode;
         ir::ResultKind result_kind;
+        
+        // --- Hybrid Popcount Aggregation ---
+        uint64_t base_sum = 0;
+        std::vector<int64_t> delta_weights;
     };
 
     core::SchemaRegistry registry_;
