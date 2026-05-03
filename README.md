@@ -1,6 +1,6 @@
 # AarchLogic Architecture Guide
 
-## About AarchLogic
+## About
 
 AarchLogic is a world-record class, universal JIT-accelerated vector logic engine designed specifically for the AArch64 (ARM64) architecture. It represents a paradigm shift in data processing, moving away from traditional instruction-based computing toward Software-Defined Hardware Logic.
 
