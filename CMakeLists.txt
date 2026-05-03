@@ -90,6 +90,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/iceoryx/iceoryx_platform/CMakeLi
     message(STATUS "Building iceoryx (platform/hoofs/posh) from submodule")
     set(IOX_BUILD_TESTS OFF CACHE BOOL "Disable iceoryx tests")
     set(IOX_BUILD_EXAMPLES OFF CACHE BOOL "Disable iceoryx examples")
+    
+    # Optional ACL support (Defaults to ON for compatibility, but can be disabled)
+    option(IOX_PLATFORM_FEATURE_ACL "Enable iceoryx ACL support" ON)
+    
     set(IOX_VERSION_STRING "2.0.0" CACHE STRING "iceoryx version string")
     # Build platform first (dependency of hoofs)
     add_subdirectory(external/iceoryx/iceoryx_platform)
@@ -107,17 +111,20 @@ else()
 endif()
 
 # FlatBuffers - Serialization (with flatc compiler)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/flatbuffers/CMakeLists.txt")
-    message(STATUS "Building FlatBuffers from submodule")
-    set(FLATBUFFERS_BUILD_TESTS OFF CACHE BOOL "Disable FlatBuffers tests")
-    set(FLATBUFFERS_BUILD_FLATLIB OFF CACHE BOOL "Disable FlatLib")
-    set(FLATBUFFERS_BUILD_FLATC ON CACHE BOOL "Build flatc compiler")
-    add_subdirectory(external/flatbuffers)
-    set(flatbuffers_FOUND TRUE)
-else()
-    find_package(flatbuffers QUIET)
-    if(NOT flatbuffers_FOUND)
-        message(STATUS "FlatBuffers not found; serialization features will be disabled")
+option(APEX_BUILD_FLATBUFFERS "Build FlatBuffers support" ON)
+if(APEX_BUILD_FLATBUFFERS)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/flatbuffers/CMakeLists.txt")
+        message(STATUS "Building FlatBuffers from submodule")
+        set(FLATBUFFERS_BUILD_TESTS OFF CACHE BOOL "Disable FlatBuffers tests")
+        set(FLATBUFFERS_BUILD_FLATLIB OFF CACHE BOOL "Disable FlatLib")
+        set(FLATBUFFERS_BUILD_FLATC ON CACHE BOOL "Build flatc compiler")
+        add_subdirectory(external/flatbuffers)
+        set(flatbuffers_FOUND TRUE)
+    else()
+        find_package(flatbuffers QUIET)
+        if(NOT flatbuffers_FOUND)
+            message(STATUS "FlatBuffers not found; serialization features will be disabled")
+        endif()
     endif()
 endif()
 
@@ -186,18 +193,34 @@ endif()
 
 
 # Testing
-enable_testing()
-add_subdirectory(tests)
+option(APEX_BUILD_TESTS "Build tests" ON)
+if(APEX_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # Benchmarking
-add_subdirectory(benchmarks)
+option(APEX_BUILD_BENCHMARKS "Build benchmarks" ON)
+if(APEX_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
 
 # Examples
-add_subdirectory(examples/trading)
+option(APEX_BUILD_EXAMPLES "Build examples" ON)
+if(APEX_BUILD_EXAMPLES)
+    add_subdirectory(examples/trading)
+endif()
 
 # Bindings
-add_subdirectory(bindings/python)
-add_subdirectory(bindings/java)
+option(APEX_BUILD_PYTHON "Build Python bindings" ON)
+if(APEX_BUILD_PYTHON)
+    add_subdirectory(bindings/python)
+endif()
+
+option(APEX_BUILD_JAVA "Build Java bindings" ON)
+if(APEX_BUILD_JAVA)
+    add_subdirectory(bindings/java)
+endif()
 
 # Installation
 set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/dist")
