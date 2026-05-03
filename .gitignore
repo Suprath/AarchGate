@@ -1,8 +1,11 @@
 # Build directories
 build/
 build-release/
+build_perf/
 cmake-build-debug/
 cmake-build-release/
+bin/
+out/
 
 # Compiled libraries
 *.so

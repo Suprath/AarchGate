@@ -67,6 +67,26 @@ ir::Node* LT(ir::Node* a, ir::Node* b) noexcept {
     return GT(b, a);
 }
 
+ir::Node* GE(ir::Node* a, ir::Node* b) noexcept {
+    ir::Node* n = g_pool.alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::GE;
+    n->result_kind = ir::ResultKind::BITMASK;
+    n->left = a;
+    n->right = b;
+    return n;
+}
+
+ir::Node* LE(ir::Node* a, ir::Node* b) noexcept {
+    ir::Node* n = g_pool.alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::LE;
+    n->result_kind = ir::ResultKind::BITMASK;
+    n->left = a;
+    n->right = b;
+    return n;
+}
+
 ir::Node* EQ(ir::Node* a, ir::Node* b) noexcept {
     ir::Node* n = g_pool.alloc();
     if (!n) return nullptr;

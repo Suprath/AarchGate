@@ -35,8 +35,14 @@ public:
                        ExecutionMode mode = ExecutionMode::BIT_SLICED) noexcept;
 
     uint64_t execute(const void* data_ptr, size_t row_count) noexcept;
-
     uint64_t execute_parallel(const void* data_ptr, size_t row_count, int num_threads = 4) noexcept;
+
+    // Native Bit-Sliced Path: Zero-Overhead Silicon Limit
+    // bit_planes: contiguous block of [num_blocks * num_fields * 64] uint64s
+    // num_blocks: number of 64-row blocks to process
+    uint64_t execute_native(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks) noexcept;
+
+    uint64_t execute_native_parallel(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks, int num_threads = 4) noexcept;
 
     // Internal access for tests
     jit::JitCompiler& get_compiler() noexcept { return compiler_; }
