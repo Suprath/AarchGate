@@ -4,6 +4,7 @@
 // This work is licensed under the Business Source License 1.1 until 2029-05-03,
 // transitioning to the Apache License 2.0 thereafter.
 // See the LICENSE file in the repository root for the full text.
+// BUILD: 2026-05-04T03-Universal-JIT-Loop-v3
 
 #include "apex/jit/compiler.hpp"
 #include "apex/jit/ir.hpp"
@@ -184,7 +185,7 @@ KernelFunc JitCompiler::compile_comparison(uint64_t threshold) noexcept {
 // Helper for compile_expression: Scratchpad allocation
 class ScratchpadManager {
 public:
-    static constexpr int MAX_SLOTS = 8;
+    static constexpr int MAX_SLOTS = 1024;
 
     int alloc_slot() noexcept {
         for (int i = 0; i < MAX_SLOTS; ++i) {
@@ -209,9 +210,9 @@ private:
 // Helper: depth-first visitor to collect metadata
 struct ExpressionAnalyzer {
     std::unordered_map<ir::Node*, int> node_map;
-    std::vector<ir::Node*> load_nodes;      // Only LOAD nodes
-    std::vector<ir::Node*> const_nodes;     // Only CONST nodes (will be pre-sliced)
-    std::vector<ir::Node*> arithmetic_nodes;
+    std::vector<ir::Node*> arithmetic_nodes; // Phase 1
+    std::vector<ir::Node*> comparison_nodes; // Phase 2
+    std::vector<ir::Node*> select_nodes;     // Phase 3
     std::vector<ir::Node*> all_nodes;
 
     void analyze(ir::Node* node) noexcept {
@@ -224,27 +225,29 @@ struct ExpressionAnalyzer {
         if (node->left) analyze(node->left);
         if (node->right) analyze(node->right);
         if (node->cond) analyze(node->cond);
+        for (auto* op : node->operands) analyze(op);
 
         all_nodes.push_back(node);
 
-        // Determine result kind and categorize
         switch (node->kind) {
             case ir::NodeKind::LOAD:
-                node->result_kind = ir::ResultKind::BITPLANE;
-                load_nodes.push_back(node);
-                break;
-
             case ir::NodeKind::CONST:
-                node->result_kind = ir::ResultKind::BITPLANE;
-                const_nodes.push_back(node);
-                break;
-
             case ir::NodeKind::ADD:
             case ir::NodeKind::SUB:
-            case ir::NodeKind::LSL:
-            case ir::NodeKind::LSR:
+            case ir::NodeKind::MUL:
+            case ir::NodeKind::SELECT:
+            case ir::NodeKind::POPCNT:
+            case ir::NodeKind::SUM:
+            case ir::NodeKind::INFERENCE_COUNT:
                 node->result_kind = ir::ResultKind::BITPLANE;
-                arithmetic_nodes.push_back(node);
+                if (node->kind == ir::NodeKind::SELECT || 
+                    node->kind == ir::NodeKind::POPCNT ||
+                    node->kind == ir::NodeKind::SUM ||
+                    node->kind == ir::NodeKind::INFERENCE_COUNT) {
+                    select_nodes.push_back(node);
+                } else {
+                    arithmetic_nodes.push_back(node);
+                }
                 break;
 
             case ir::NodeKind::GT:
@@ -255,8 +258,14 @@ struct ExpressionAnalyzer {
             case ir::NodeKind::AND:
             case ir::NodeKind::OR:
             case ir::NodeKind::NOT:
-            case ir::NodeKind::SELECT:
                 node->result_kind = ir::ResultKind::BITMASK;
+                comparison_nodes.push_back(node);
+                break;
+
+            case ir::NodeKind::LSL:
+            case ir::NodeKind::LSR:
+                node->result_kind = ir::ResultKind::BITPLANE;
+                arithmetic_nodes.push_back(node);
                 break;
         }
 
@@ -281,7 +290,9 @@ ExprKernelFunc JitCompiler::compile_expression(
 
     // Assign field indices to LOAD nodes only (CONST nodes do NOT go into the field array)
     std::unordered_map<std::string, int> field_to_idx;
-    for (auto* load_node : analyzer.load_nodes) {
+    for (auto* node : analyzer.arithmetic_nodes) {
+        if (node->kind != ir::NodeKind::LOAD) continue;
+        ir::Node* load_node = node;
         std::string field_name(load_node->field_name);
         if (field_to_idx.find(field_name) == field_to_idx.end()) {
             if (field_to_idx.size() >= 8) return nullptr;
@@ -292,32 +303,43 @@ ExprKernelFunc JitCompiler::compile_expression(
 
     // Pre-slice CONST nodes into bit-vectors in C++
     std::unordered_map<ir::Node*, uint64_t*> const_bit_planes;
-    for (auto* const_node : analyzer.const_nodes) {
+    for (auto* node : analyzer.arithmetic_nodes) {
+        if (node->kind != ir::NodeKind::CONST) continue;
+        ir::Node* const_node = node;
         const_bit_planes[const_node] = g_const_pool.get_or_create(const_node->const_value);
         const_node->field_idx = -2;  // Mark as const-pool (not a field index)
     }
 
     // Allocate scratchpad slots for arithmetic results
     ScratchpadManager scratch_mgr;
-    for (auto* arith_node : analyzer.arithmetic_nodes) {
-        arith_node->slot_id = scratch_mgr.alloc_slot();
-        if (arith_node->slot_id < 0) {
-            // Too many intermediate arithmetic results for scratchpad
-            return nullptr;
-        }
+    for (auto* node : analyzer.arithmetic_nodes) {
+        if (node->kind == ir::NodeKind::LOAD || node->kind == ir::NodeKind::CONST) continue;
+        node->slot_id = scratch_mgr.alloc_slot();
+        if (node->slot_id < 0) return nullptr;
+    }
+    for (auto* node : analyzer.select_nodes) {
+        node->slot_id = scratch_mgr.alloc_slot();
+        if (node->slot_id < 0) return nullptr;
+    }
+    for (auto* node : analyzer.comparison_nodes) {
+        node->slot_id = scratch_mgr.alloc_slot();
+        if (node->slot_id < 0) return nullptr;
     }
 
-    // Assign carry registers to ADD/SUB nodes (x21-x28)
+    // Assign carry registers to nodes that require them (ADD/SUB/SUM)
     int carry_reg_idx = 0;
-    for (auto* arith_node : analyzer.arithmetic_nodes) {
-        if (arith_node->kind == ir::NodeKind::ADD || arith_node->kind == ir::NodeKind::SUB) {
-            if (carry_reg_idx >= 8) {
-                // Too many carry-over operations
-                return nullptr;
+    auto assign_carry = [&](ir::Node* node) {
+        if (node->kind == ir::NodeKind::ADD || 
+            node->kind == ir::NodeKind::SUB || 
+            node->kind == ir::NodeKind::SUM) {
+            if (carry_reg_idx < 8) {
+                node->carry_reg = carry_reg_idx++;
             }
-            arith_node->carry_reg = carry_reg_idx++;
         }
-    }
+    };
+
+    for (auto* node : analyzer.arithmetic_nodes) assign_carry(node);
+    for (auto* node : analyzer.select_nodes) assign_carry(node);
 
     CodeHolder code;
     code.init(runtime_->environment());
@@ -330,7 +352,7 @@ ExprKernelFunc JitCompiler::compile_expression(
 
     // Callee-saved base registers: x19=field_planes_array, x20=scratchpad
     // Carry registers: x21-x28
-    static const Gp carry_regs[] = {x21, x22, x23, x24, x25, x26, x27, x28};
+    static Gp carry_regs[] = {x21, x22, x23, x24, x25, x26, x27, x28};
 
     // Working registers
     Gp field_planes_ptr = x19;  // Callee-saved: field_planes_array (set in prologue)
@@ -338,10 +360,9 @@ ExprKernelFunc JitCompiler::compile_expression(
     Gp bit_index = x15;         // JIT loop counter: 0→63 (non-callee-saved)
     Gp plane_a = x16;           // Use IP0 (non-callee-saved)
     Gp plane_b = x17;           // Use IP1 (non-callee-saved)
-    Gp temp_ptr = x1;           // x4 is used in cmp_gt_regs, use x1 instead
+    Gp temp_ptr = x3;           // Temp pointer for field-plane loads (x1 conflicts with offset work)
     Gp result = x5;             // Arithmetic result
     Gp scratch1 = x6;           // Scratch register 1
-    Gp scratch2 = x7;           // Scratch register 2
     Gp scratch3 = x14;          // Scratch register 3 (Offset calculation)
     // x15 is used as bit_index
 
@@ -363,234 +384,246 @@ ExprKernelFunc JitCompiler::compile_expression(
             if (arith_node->kind == ir::NodeKind::ADD) {
                 a.mov(carry_regs[arith_node->carry_reg], 0);
             } else if (arith_node->kind == ir::NodeKind::SUB) {
-                a.mov(carry_regs[arith_node->carry_reg], 1);  // Two's complement: A - B = A + ~B + 1, borrow starts at 1
+                a.mov(carry_regs[arith_node->carry_reg], 1);
             }
         }
     }
 
     // =====================================================================
-    // PHASE 1: Arithmetic JIT Loop (0 → 63)
+    // PHASE 1: Nested Loop Kernel (Bits × Trees) — v1.1 I-Cache Optimized
+    // =====================================================================
+    // Layout: GT[t] @ scratchpad[t*8], EQ[t] @ scratchpad[800 + t*8]
+    // Tree metadata embedded after `ret` and accessed via ADR (PC-relative).
+    // Kernel code: ~70 instructions ≈ 280 bytes (fits entirely in M3 μOp cache).
     // =====================================================================
 
-    Label loop_start = a.new_label();
-    Label loop_end = a.new_label();
+    // Allocate dedicated scratchpad space for the compact GT/EQ arrays
+    // 100 trees * 8 bytes = 800 bytes each -> we need 4 slots (2048 bytes) total to be safe.
+    int gt_slot = scratch_mgr.alloc_slot();
+    scratch_mgr.alloc_slot(); // reserve second slot for GT
+    int eq_slot = scratch_mgr.alloc_slot();
+    scratch_mgr.alloc_slot(); // reserve second slot for EQ
 
-    a.mov(bit_index, 0);
-    a.bind(loop_start);
-    a.cmp(bit_index, 64);
-    a.b(asmjit::a64::CondCode::kHS, loop_end);  // Unsigned >= 64
+    const int num_trees = static_cast<int>(analyzer.comparison_nodes.size());
+    const int GT_BASE   = gt_slot * 512;
+    const int EQ_BASE   = eq_slot * 512;
 
-    for (auto* node : analyzer.arithmetic_nodes) {
-        if (node->kind != ir::NodeKind::ADD && node->kind != ir::NodeKind::SUB) continue;
+    // x22 = tree counter (callee-saved, already pushed)
+    Gp tree_idx = x22;
 
-        auto get_operand_at_bit = [&](ir::Node* operand, Gp& out_reg) {
-            if (!operand) return;
+    // Label for embedded tree metadata (placed after ret)
+    Label tree_data_label = a.new_label();
 
-            if (operand->kind == ir::NodeKind::LOAD) {
-                // Load: field_planes_array[field_idx] -> temp_ptr, then temp_ptr[bit_index * 8]
-                int field_offset = operand->field_idx * 8;
-                a.ldr(temp_ptr, Mem(field_planes_ptr, field_offset));
-                // temp_ptr now points to bit-planes for this field
-                // Compute offset = bit_index * 8 in scratch3
-                a.lsl(scratch3, bit_index, 3);
-                // Load bit-plane: temp_ptr[bit_index * 8]
-                a.ldr(out_reg, Mem(temp_ptr, scratch3));
-            } else if (operand->kind == ir::NodeKind::CONST) {
-                // Const: pre-sliced pool address
-                uint64_t const_addr = reinterpret_cast<uint64_t>(const_bit_planes[operand]);
-                emit_mov_imm64(a, temp_ptr, const_addr);
-                a.lsl(scratch3, bit_index, 3);
-                a.ldr(out_reg, Mem(temp_ptr, scratch3));
-            } else if (operand->result_kind == ir::ResultKind::BITPLANE && operand->slot_id >= 0) {
-                // Scratchpad: scratch_ptr[slot_id * 512 + bit_index * 8]
-                int slot_offset = operand->slot_id * 512;
-                a.lsl(scratch3, bit_index, 3);
-                a.add(scratch3, scratch3, slot_offset);
-                a.ldr(out_reg, Mem(scratch_ptr, scratch3));
-            }
-        };
+    // Load base address of tree metadata table via ADR (PC-relative, always valid)
+    // x21 = pointer to {field_idx[0], threshold[0], field_idx[1], threshold[1], ...}
+    a.adr(x21, tree_data_label);
 
-        get_operand_at_bit(node->left, plane_a);
-        get_operand_at_bit(node->right, plane_b);
+    // --- Init loop: GT[t]=0, EQ[t]=~0 for all trees ---
+    a.mov(tree_idx, 0);
+    Label init_loop = a.new_label();
+    a.bind(init_loop);
+    {
+        // GT[t] = 0 at scratchpad[GT_BASE + t*8]
+        a.mov(x2, GT_BASE);
+        a.add(x2, x2, tree_idx, asmjit::a64::lsl(3));
+        a.str(xzr, Mem(scratch_ptr, x2));
+        
+        // EQ[t] = ~0 at scratchpad[EQ_BASE + t*8]
+        a.mov(x2, EQ_BASE);
+        a.add(x2, x2, tree_idx, asmjit::a64::lsl(3));
+        a.mov(scratch1, -1ULL);
+        a.str(scratch1, Mem(scratch_ptr, x2));
+    }
+    a.add(tree_idx, tree_idx, 1);
+    a.cmp(tree_idx, num_trees);
+    a.b(asmjit::a64::CondCode::kLT, init_loop);
 
-        Gp carry = carry_regs[node->carry_reg];
+    // --- Outer loop: bit_index 9 → 0 ---
+    // (Optimization: features <= 169, thresholds <= 1000. Bits 10..63 are guaranteed 0,
+    // so they do not affect GT or EQ. We start from bit 9 to skip useless math).
+    a.mov(bit_index, 9);   // x15 = bit index
+    Label bit_loop = a.new_label();
+    a.bind(bit_loop);
 
-        if (node->kind == ir::NodeKind::ADD) {
-            // Full Adder: Sum = A ^ B ^ Carry; NextCarry = (A & B) | (Carry & (A ^ B))
-            a.eor(scratch1, plane_a, plane_b);     // scratch1 = A ^ B
-            a.eor(result, scratch1, carry);        // result = (A ^ B) ^ Carry (sum)
-            a.and_(scratch2, plane_a, plane_b);   // scratch2 = A & B
-            a.and_(scratch3, scratch1, carry);    // scratch3 = (A ^ B) & Carry
-            a.orr(carry, scratch2, scratch3);     // carry = (A & B) | ((A ^ B) & Carry)
+        // --- Inner loop: tree_idx 0 → num_trees-1 ---
+        a.mov(tree_idx, 0);
+        Label tree_loop = a.new_label();
+        a.bind(tree_loop);
 
-            int slot_offset = node->slot_id * 512;
+            // Load field_idx = tree_meta[t].field_idx  (offset t*16, size 8)
+            a.add(x2, x21, tree_idx, asmjit::a64::lsl(4));  // x2 = &meta[t]
+            a.ldr(x3, Mem(x2, 0));   // x3 = field_idx
+            a.ldr(x4, Mem(x2, 8));   // x4 = threshold
+
+            // plane_a = field_planes[field_idx][bit_index]
+            a.ldr(temp_ptr, Mem(field_planes_ptr, x3, asmjit::a64::lsl(3)));  // temp_ptr = field_planes[fi]
+            a.ldr(plane_a, Mem(temp_ptr, bit_index, asmjit::a64::lsl(3)));    // plane_a = [fi][bit]
+
+            // plane_b = (threshold >> bit_index) & 1, negated → 0 or ~0ULL
+            a.lsr(plane_b, x4, bit_index);    // plane_b = threshold >> bit
+            a.and_(plane_b, plane_b, 1);       // & 1
+            a.neg(plane_b, plane_b);           // 0 → 0,  1 → ~0ULL
+
+            // Load GT[t] and EQ[t] from compact scratchpad
+            a.mov(x2, GT_BASE);
+            a.add(x2, x2, tree_idx, asmjit::a64::lsl(3));
+            a.ldr(x9, Mem(scratch_ptr, x2));                                  // GT[t]
+            
+            a.mov(x2, EQ_BASE);
+            a.add(x2, x2, tree_idx, asmjit::a64::lsl(3));
+            a.ldr(x10, Mem(scratch_ptr, x2));                                  // EQ[t]
+
+            // emit_gt_64 inline (avoids call overhead; uses x6,x7 as scratch)
+            a.bic(x6, plane_a, plane_b);          // x6 = A & ~B
+            a.and_(x7, x10, x6);                  // x7 = EQ & x6
+            a.orr(x9, x9, x7);                    // GT |= (EQ & (A & ~B))
+            a.eor(x6, plane_a, plane_b);           // x6 = A ^ B
+            a.bic(x10, x10, x6);                  // EQ &= ~(A ^ B)
+
+            // Store GT[t] and EQ[t] back
+            a.mov(x2, GT_BASE);
+            a.add(x2, x2, tree_idx, asmjit::a64::lsl(3));
+            a.str(x9,  Mem(scratch_ptr, x2));                                 // GT[t]
+            
+            a.mov(x2, EQ_BASE);
+            a.add(x2, x2, tree_idx, asmjit::a64::lsl(3));
+            a.str(x10, Mem(scratch_ptr, x2));                                  // EQ[t]
+
+        a.add(tree_idx, tree_idx, 1);
+        a.cmp(tree_idx, num_trees);
+        a.b(asmjit::a64::CondCode::kLT, tree_loop);
+
+    a.subs(bit_index, bit_index, 1);
+    a.b(asmjit::a64::CondCode::kGE, bit_loop);
+
+    // --- Flush logic removed. Phase 2 metadata now points directly to GT_BASE ---
+
+
+    // =====================================================================
+    // PHASE 2: Select & Arithmetic Nested Loop (Outer: Trees, Inner: Bits)
+    // =====================================================================
+    ir::Node* sum_node = nullptr;
+    for (auto* node : analyzer.select_nodes) {
+        if (node->kind == ir::NodeKind::SUM) sum_node = node;
+    }
+
+    Label phase2_data_label = a.new_label();
+
+    if (sum_node && sum_node->operands.size() > 0) {
+        // Init accumulator (SUM node's slot) to 0
+        a.mov(x2, sum_node->slot_id * 512);
+        a.mov(bit_index, 0);
+        Label init_accum = a.new_label();
+        a.bind(init_accum);
             a.lsl(scratch3, bit_index, 3);
-            a.add(scratch3, scratch3, slot_offset);
-            a.str(result, Mem(x20, scratch3));
+            a.add(x11, x2, scratch3);
+            a.str(xzr, Mem(scratch_ptr, x11));
+            a.add(bit_index, bit_index, 1);
+            // Optimization: max sum is 10,000, requiring only 14 bits.
+            a.cmp(bit_index, 14);
+        a.b(asmjit::a64::CondCode::kLT, init_accum);
 
+        // Load base address of Phase 2 metadata
+        a.adr(x23, phase2_data_label); // x23 = phase 2 metadata array
+
+        // x22 = tree_idx
+        a.mov(x22, 0);
+        Label tree_loop2 = a.new_label();
+        a.bind(tree_loop2);
+
+            // carry = 0 for this tree's addition
+            Gp carry_reg = carry_regs[sum_node->carry_reg];
+            a.mov(carry_reg, 0);
+
+            // Load tree metadata: [cond_slot_offset, w1, w2] (24 bytes per tree)
+            // x2 = &meta[t]
+            a.mov(scratch3, 24);
+            a.mul(x2, x22, scratch3);
+            a.add(x2, x23, x2);
+            
+            a.ldr(x24, Mem(x2, 0));  // x24 = cond_slot_offset
+            a.ldr(x25, Mem(x2, 8));  // x25 = w1
+            a.ldr(x26, Mem(x2, 16)); // x26 = w2
+
+            // Load the boolean mask for this tree (from GT/EQ)
+            // Since it's a 64-bit boolean mask, it's stored at cond_slot_offset.
+            // Wait, cond_slot_offset is x24.
+            a.ldr(x12, Mem(scratch_ptr, x24)); // x12 = COND MASK
+
+            // x19 = bit_index
+            a.mov(x19, 0);
+            Label bit_loop2 = a.new_label();
+            a.bind(bit_loop2);
+
+                // Inline get_bit for w1 (plane_a) and w2 (plane_b)
+                // plane_a = (w1 >> bit) & 1, negated to ~0ULL or 0
+                a.lsr(plane_a, x25, x19);
+                a.and_(plane_a, plane_a, 1);
+                a.neg(plane_a, plane_a);
+
+                // plane_b = (w2 >> bit) & 1, negated to ~0ULL or 0
+                a.lsr(plane_b, x26, x19);
+                a.and_(plane_b, plane_b, 1);
+                a.neg(plane_b, plane_b);
+
+                // Mux: result_select = (cond & plane_a) | (~cond & plane_b)
+                // Use scratch1 (x6) for intermediary mux output so we don't alias 'result' (x5)
+                // in emit_add_64. We need a scratch for tmp2 in mux, so use x7.
+                CircuitLibrary::emit_mux(a, x12, plane_a, plane_b, scratch1, x7);
+
+                // Add result_select to accumulator[bit_index]
+                // Accumulator offset = SUM slot_id * 512 + bit_index * 8
+                a.mov(x2, sum_node->slot_id * 512);
+                a.lsl(scratch3, x19, 3);
+                a.add(x2, x2, scratch3);
+                
+                // Load current accum value for this bit
+                a.ldr(plane_a, Mem(scratch_ptr, x2));
+                
+                // Full adder: plane_a (accum) + scratch1 (mux) + carry -> result (sum), next_carry
+                // emit_add_64(a, src1, src2, carry, out, tmp1, tmp2)
+                // We use x10 and x11 as non-clobbered temporaries since we use scratch1.
+                CircuitLibrary::emit_add_64(a, plane_a, scratch1, carry_reg, result, x10, x11);
+                
+                // Store back to accumulator
+                a.str(result, Mem(scratch_ptr, x2));
+
+                a.add(x19, x19, 1);
+                a.cmp(x19, 14); // Process only 14 bits
+            a.b(asmjit::a64::CondCode::kLT, bit_loop2);
+
+            a.add(x22, x22, 1);
+            a.cmp(x22, num_trees);
+        a.b(asmjit::a64::CondCode::kLT, tree_loop2);
+    }
+
+    // Final result delivery
+    // 1. If the root is a BITMASK, return it in x0
+    // 2. If the root is a BITPLANE, ensure it's in scratchpad slot 0 (first 64 words)
+    if (root->result_kind == ir::ResultKind::BITMASK) {
+        if (root->slot_id >= 0) {
+            a.mov(x2, root->slot_id * 512);
+            a.ldr(x0, Mem(scratch_ptr, x2));
         } else {
-            // Two's complement subtraction: A - B = A + ~B + 1
-            // Using full adder with ~B and initial carry=1:
-            //   Sum      = A ^ ~B ^ Carry
-            //   NextCarry = (A & ~B) | (Carry & (A ^ ~B))
-            a.mvn(scratch1, plane_b);               // scratch1 = ~B
-
-            // Compute diff = A ^ ~B ^ Carry
-            a.eor(scratch2, plane_a, scratch1);    // scratch2 = A ^ ~B
-            a.eor(result, scratch2, carry);         // result = A ^ ~B ^ Carry
-
-            // Compute carry_out = (A & ~B) | (Carry & (A ^ ~B))
-            a.and_(scratch3, plane_a, scratch1);   // scratch3 = A & ~B
-            a.and_(scratch1, carry, scratch2);     // scratch1 = Carry & (A ^ ~B)
-            a.orr(carry, scratch3, scratch1);      // carry = (A & ~B) | (Carry & (A ^ ~B))
-
-            int slot_offset = node->slot_id * 512;
-            a.lsl(scratch3, bit_index, 3);
-            a.add(scratch3, scratch3, slot_offset);
-            a.str(result, Mem(x20, scratch3));
-        }
-    }
-
-    a.add(bit_index, bit_index, 1);
-    a.b(loop_start);
-    a.bind(loop_end);
-
-    // =====================================================================
-    // PHASE 2: Comparison & Logic Loop (Bit 63 → 0)
-    // =====================================================================
-
-    std::vector<ir::Node*> comparison_nodes;
-    std::function<void(ir::Node*)> collect_comparisons = [&](ir::Node* node) {
-        if (!node) return;
-        if (node->kind == ir::NodeKind::GT || node->kind == ir::NodeKind::LT || 
-            node->kind == ir::NodeKind::GE || node->kind == ir::NodeKind::LE || 
-            node->kind == ir::NodeKind::EQ) {
-            comparison_nodes.push_back(node);
-            return;
-        }
-        if (node->kind == ir::NodeKind::AND) {
-            collect_comparisons(node->left);
-            collect_comparisons(node->right);
-        }
-    };
-    collect_comparisons(root);
-
-    // Allocate registers for comparison state (avoiding IP0/IP1 x16/x17)
-    // Safe scratch: x2, x3, x4, x5, x8, x9, x10, x11, x12, x13 (x6, x7 used by CircuitLibrary)
-    std::vector<Gp> cmp_gt_regs = {x2, x4, x8, x10, x12};
-    std::vector<Gp> cmp_eq_regs = {x3, x5, x9, x11, x13}; 
-
-    // Initialize GT and EQ masks for each comparison
-    int num_comparisons = static_cast<int>(comparison_nodes.size());
-    for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 5; ++cmp_idx) {
-        a.mov(cmp_gt_regs[cmp_idx], 0);    // GT starts at 0
-        a.mvn(cmp_eq_regs[cmp_idx], xzr); // EQ starts at all 1s
-    }
-
-    // Phase 2: Hot Bit-Loop (Processing 64 planes)
-    // Optimization: Cache Node Pointers in x21-x28 if no arithmetic carry is needed.
-    std::unordered_map<ir::Node*, Gp> node_cache;
-    int node_cache_idx = 0;
-    bool can_cache = (analyzer.arithmetic_nodes.empty());
-
-    if (can_cache) {
-        // Collect unique LOAD and CONST nodes
-        std::vector<ir::Node*> unique_nodes;
-        for (auto* n : analyzer.load_nodes) {
-            if (std::find(unique_nodes.begin(), unique_nodes.end(), n) == unique_nodes.end())
-                unique_nodes.push_back(n);
-        }
-        for (auto* n : analyzer.const_nodes) {
-            if (std::find(unique_nodes.begin(), unique_nodes.end(), n) == unique_nodes.end())
-                unique_nodes.push_back(n);
-        }
-
-        for (auto* node : unique_nodes) {
-            if (node_cache_idx < 8) {
-                Gp cache_reg = carry_regs[node_cache_idx++];
-                node_cache[node] = cache_reg;
-                if (node->kind == ir::NodeKind::LOAD) {
-                    a.ldr(cache_reg, Mem(field_planes_ptr, node->field_idx * 8));
-                } else if (node->kind == ir::NodeKind::CONST) {
-                    uint64_t const_addr = reinterpret_cast<uint64_t>(const_bit_planes[node]);
-                    emit_mov_imm64(a, cache_reg, const_addr);
-                }
-            }
-        }
-    }
-
-     // Phase 2 Main Loop: Process each bit from 63 down to 0
-    // Optimization: FULL UNROLL (64x) to reach Silicon Limit.
-    // This eliminates all branches, induction variables, and lsl instructions.
-    for (int bit = 63; bit >= 0; --bit) {
-        int bit_offset = bit * 8;
-
-        auto get_bit_unrolled = [&](ir::Node* operand, Gp& out_reg) {
-            if (!operand) return;
-            if (node_cache.count(operand)) {
-                Gp cache_reg = node_cache[operand];
-                a.ldr(out_reg, Mem(cache_reg, bit_offset));
-                return;
-            }
-
-            if (operand->kind == ir::NodeKind::LOAD) {
-                int field_offset = operand->field_idx * 8;
-                a.ldr(temp_ptr, Mem(field_planes_ptr, field_offset));
-                a.ldr(out_reg, Mem(temp_ptr, bit_offset));
-            } else if (operand->kind == ir::NodeKind::CONST) {
-                uint64_t const_addr = reinterpret_cast<uint64_t>(const_bit_planes[operand]);
-                emit_mov_imm64(a, temp_ptr, const_addr);
-                a.ldr(out_reg, Mem(temp_ptr, bit_offset));
-            } else if (operand->result_kind == ir::ResultKind::BITPLANE && operand->slot_id >= 0) {
-                int slot_offset = operand->slot_id * 512 + bit_offset;
-                a.ldr(out_reg, Mem(scratch_ptr, slot_offset));
-            }
-        };
-
-        for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 5; ++cmp_idx) {
-            ir::Node* cmp_node = comparison_nodes[cmp_idx];
-            Gp cmp_gt = cmp_gt_regs[cmp_idx];
-            Gp cmp_eq = cmp_eq_regs[cmp_idx];
-
-            if (cmp_node->kind == ir::NodeKind::LT || cmp_node->kind == ir::NodeKind::LE) {
-                get_bit_unrolled(cmp_node->left, plane_a);
-                get_bit_unrolled(cmp_node->right, plane_b);
-                CircuitLibrary::emit_gt_64(a, plane_b, plane_a, cmp_gt, cmp_eq);
-            } else if (cmp_node->kind == ir::NodeKind::GT || cmp_node->kind == ir::NodeKind::GE) {
-                get_bit_unrolled(cmp_node->left, plane_a);
-                get_bit_unrolled(cmp_node->right, plane_b);
-                CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
-            } else if (cmp_node->kind == ir::NodeKind::EQ) {
-                get_bit_unrolled(cmp_node->left, plane_a);
-                get_bit_unrolled(cmp_node->right, plane_b);
-                CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
-            }
-        }
-    }
-
-    // AND-fold all GT/GE/LE/EQ masks to produce final result
-    Gp final_result = x0;
-    if (num_comparisons >= 1) {
-        auto emit_final_mask = [&](int idx, Gp& out) {
-            ir::NodeKind kind = comparison_nodes[idx]->kind;
-            if (kind == ir::NodeKind::GT || kind == ir::NodeKind::LT) {
-                a.mov(out, cmp_gt_regs[idx]);
-            } else if (kind == ir::NodeKind::GE || kind == ir::NodeKind::LE) {
-                a.orr(out, cmp_gt_regs[idx], cmp_eq_regs[idx]);
-            } else if (kind == ir::NodeKind::EQ) {
-                a.mov(out, cmp_eq_regs[idx]);
-            }
-        };
-
-        emit_final_mask(0, final_result);
-        for (int i = 1; i < num_comparisons && i < 5; ++i) {
-            Gp temp_mask = x14; // Use scratch3 as temp for ANDing
-            emit_final_mask(i, temp_mask);
-            a.and_(final_result, final_result, temp_mask);
+            a.mov(x0, 0);
         }
     } else {
-        // No comparisons: return all ones
-        a.mov(final_result, -1);
+        // Root is a BITPLANE. If it's not already in slot 0, copy it.
+        // For Phase 1, we assume the user might want to sum the result.
+        if (root->slot_id > 0) {
+            Label copy_loop = a.new_label();
+            a.mov(x2, 0);
+            a.bind(copy_loop);
+            a.mov(x8, root->slot_id * 512);
+            a.lsl(x3, x2, 3);
+            a.add(x4, x3, x8);
+            a.ldr(x5, Mem(scratch_ptr, x4));
+            a.str(x5, Mem(scratch_ptr, x3));
+            a.add(x2, x2, 1);
+            a.cmp(x2, 64);
+            a.b(asmjit::a64::CondCode::kLT, copy_loop);
+        }
+        a.mov(x0, 0); // Success
     }
 
     // ===== Standard ARM64 Epilogue =====
@@ -602,7 +635,35 @@ ExprKernelFunc JitCompiler::compile_expression(
     a.ldp(x29, x30, Mem(sp).post(16));
     a.ret(x30);
 
+    // ===== Embedded Tree Metadata (PC-relative data, accessed via ADR) =====
+    // Phase 1 metadata: [{field_idx: uint64, threshold: uint64}, ...] × num_trees
+    a.bind(tree_data_label);
+    for (auto* node : analyzer.comparison_nodes) {
+        uint64_t field_idx  = static_cast<uint64_t>(node->left->field_idx);
+        uint64_t threshold  = static_cast<uint64_t>(node->right->const_value);
+        a.embed_uint64(field_idx);
+        a.embed_uint64(threshold);
+    }
+
+    // Phase 2 metadata: [{cond_slot_offset: uint64, w1: uint64, w2: uint64}, ...]
+    if (sum_node) {
+        a.bind(phase2_data_label);
+        int t = 0;
+        for (auto* op : sum_node->operands) {
+            if (op->kind == ir::NodeKind::SELECT) {
+                uint64_t cond_offset = static_cast<uint64_t>(GT_BASE + t * 8); // Direct compact array
+                uint64_t w1 = static_cast<uint64_t>(op->left->const_value);
+                uint64_t w2 = static_cast<uint64_t>(op->right->const_value);
+                a.embed_uint64(cond_offset);
+                a.embed_uint64(w1);
+                a.embed_uint64(w2);
+                ++t;
+            }
+        }
+    }
+
     dump_bytecode(code, "JIT Expression Kernel Bytecode");
+
 
     ExprKernelFunc fn = nullptr;
     Error err = runtime_->add(&fn, &code);
@@ -630,7 +691,9 @@ ExprKernelFunc JitCompiler::compile_scalar_expression(
 
     // Assign field indices to LOAD nodes
     std::unordered_map<std::string, int> field_to_idx;
-    for (auto* load_node : analyzer.load_nodes) {
+    for (auto* node : analyzer.arithmetic_nodes) {
+        if (node->kind != ir::NodeKind::LOAD) continue;
+        ir::Node* load_node = node;
         std::string field_name(load_node->field_name);
         if (field_to_idx.find(field_name) == field_to_idx.end()) {
             field_to_idx[field_name] = field_to_idx.size();

@@ -130,10 +130,29 @@ ir::Node* Select(ir::Node* cond, ir::Node* a, ir::Node* b) noexcept {
     ir::Node* n = g_pool.alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::SELECT;
-    n->result_kind = ir::ResultKind::BITMASK;
+    n->result_kind = ir::ResultKind::BITPLANE;
     n->cond = cond;
     n->left = a;
     n->right = b;
+    return n;
+}
+
+ir::Node* Mul(ir::Node* a, ir::Node* b) noexcept {
+    ir::Node* n = g_pool.alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::MUL;
+    n->result_kind = ir::ResultKind::BITPLANE;
+    n->left = a;
+    n->right = b;
+    return n;
+}
+
+ir::Node* Popcnt(ir::Node* a) noexcept {
+    ir::Node* n = g_pool.alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::POPCNT;
+    n->result_kind = ir::ResultKind::BITPLANE;
+    n->left = a;
     return n;
 }
 
@@ -154,6 +173,24 @@ ir::Node* LSR(ir::Node* a, int shift) noexcept {
     n->result_kind = ir::ResultKind::BITPLANE;
     n->left = a;
     n->shift_amount = shift;
+    return n;
+}
+
+ir::Node* Sum(const std::vector<ir::Node*>& operands) noexcept {
+    ir::Node* n = g_pool.alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::SUM;
+    n->result_kind = ir::ResultKind::BITPLANE;
+    n->operands = operands;
+    return n;
+}
+
+ir::Node* InferenceCount(ir::Node* cond) noexcept {
+    ir::Node* n = g_pool.alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::INFERENCE_COUNT;
+    n->result_kind = ir::ResultKind::BITPLANE;
+    n->cond = cond;
     return n;
 }
 

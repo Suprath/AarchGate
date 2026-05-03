@@ -84,8 +84,10 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
         }
         collect_fields(node->left);
         collect_fields(node->right);
-        if (node->kind == ir::NodeKind::SELECT) {
-            collect_fields(node->cond);
+        collect_fields(node->cond);
+        // SUM and other variadic nodes store children in operands, not left/right
+        for (auto* op : node->operands) {
+            collect_fields(op);
         }
     };
 
@@ -99,7 +101,8 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     fields.resize(max_idx);
 
     std::string expr_key = std::string(schema_name);
-    expr_logic_[expr_key] = {kernel, fields, mode};
+    ExprCompiledLogic compiled = {kernel, fields, mode, expr_root->result_kind};
+    expr_logic_[expr_key] = std::move(compiled);
 }
 
 void ApexEngine::gather_field(const void* data_ptr,
@@ -154,9 +157,10 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
             field_planes_array_[i] = nullptr;
         }
     }
-    // Call the JIT kernel
-    if (expr_logic.kernel) {
-        return expr_logic.kernel(field_planes_array_, scratchpad);
+    // Call the JIT kernel via volatile pointer to prevent memoization
+    auto (*volatile kernel_ptr)(const uint64_t* const*, uint64_t*) = expr_logic.kernel;
+    if (kernel_ptr) {
+        return kernel_ptr(field_planes_array_, scratchpad);
     }
     return 0;
 }
@@ -176,9 +180,9 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
             uint64_t total_matches = 0;
             const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
 
-            // Pre-allocate aligned scratchpad once per execution
+            // Pre-allocate aligned scratchpad once per execution (1024 slots * 64 bits/slot * 8 bytes)
             uint64_t* scratchpad = nullptr;
-            if (posix_memalign((void**)&scratchpad, 64, 8 * 64 * sizeof(uint64_t)) != 0) {
+            if (posix_memalign((void**)&scratchpad, 64, 1024 * 64 * sizeof(uint64_t)) != 0) {
                 return 0;
             }
 
@@ -187,9 +191,18 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
                 const void* chunk_ptr = base + chunk * 64 * row_stride;
                 size_t rows_in_chunk = std::min(size_t(64), row_count - chunk * 64);
 
-                std::memset(scratchpad, 0, 8 * 64 * sizeof(uint64_t));
+                std::memset(scratchpad, 0, 1024 * 64 * sizeof(uint64_t));
                 uint64_t chunk_mask = process_chunk_expr(chunk_ptr, row_stride, rows_in_chunk, expr_logic, scratchpad);
-                total_matches += static_cast<uint64_t>(__builtin_popcountll(chunk_mask));
+
+                if (expr_logic.result_kind == ir::ResultKind::BITMASK) {
+                    total_matches += static_cast<uint64_t>(__builtin_popcountll(chunk_mask));
+                } else {
+                    // BITPLANE: Sum(popcount(Plane_i) * 2^i)
+                    for (int i = 0; i < 64; ++i) {
+                        uint64_t plane = scratchpad[i];
+                        total_matches += (static_cast<uint64_t>(__builtin_popcountll(plane)) << i);
+                    }
+                }
             }
 
             free(scratchpad);
@@ -251,7 +264,7 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
     uint64_t total_matches = 0;
     
     uint64_t* scratchpad = nullptr;
-    if (posix_memalign((void**)&scratchpad, 64, 8 * 64 * sizeof(uint64_t)) != 0) return 0;
+    if (posix_memalign((void**)&scratchpad, 64, 64 * 64 * sizeof(uint64_t)) != 0) return 0;
     
     const uint64_t* current_ptr = bit_planes;
     const uint64_t* field_ptrs[8] = {nullptr};
@@ -261,8 +274,18 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
             field_ptrs[f] = current_ptr;
             current_ptr += 64;
         }
-        uint64_t mask = logic.kernel(field_ptrs, scratchpad);
-        total_matches += static_cast<uint64_t>(__builtin_popcountll(mask));
+        if (logic.result_kind == ir::ResultKind::BITMASK) {
+            uint64_t mask = logic.kernel(field_ptrs, scratchpad);
+            total_matches += static_cast<uint64_t>(__builtin_popcountll(mask));
+        } else {
+            // BITPLANE result: The kernel result is in the first slot of the scratchpad
+            logic.kernel(field_ptrs, scratchpad);
+            // Sum(popcount(Plane_i) * 2^i)
+            for (int i = 0; i < 64; ++i) {
+                uint64_t plane = scratchpad[i];
+                total_matches += (static_cast<uint64_t>(__builtin_popcountll(plane)) << i);
+            }
+        }
     }
     
     free(scratchpad);
@@ -285,7 +308,7 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
             size_t end_block = (t == num_threads - 1) ? num_blocks : start_block + (num_blocks / num_threads);
             
             uint64_t* scratchpad = nullptr;
-            if (posix_memalign((void**)&scratchpad, 64, 8 * 64 * sizeof(uint64_t)) != 0) return;
+            if (posix_memalign((void**)&scratchpad, 64, 64 * 64 * sizeof(uint64_t)) != 0) return;
             
             const uint64_t* local_ptrs[8] = {nullptr};
             const uint64_t* block_base = bit_planes + (start_block * num_fields * 64);

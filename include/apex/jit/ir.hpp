@@ -4,6 +4,7 @@
 #include <string_view>
 #include <cstdint>
 #include "apex/common.hpp"
+#include <vector>
 
 namespace apex {
 namespace ir {
@@ -22,8 +23,12 @@ enum class NodeKind : uint8_t {
     OR,       // Logical OR of masks
     NOT,      // Logical NOT of mask
     SELECT,   // Ternary SELECT/MUX: cond ? a : b
+    MUL,      // Arithmetic multiplication (Shift-and-Add)
+    POPCNT,   // Popcount of mask (Voting)
     LSL,      // Logical shift left (index remap only)
     LSR,      // Logical shift right (index remap only)
+    SUM,      // Multi-operand summation (Wallace Tree reduction)
+    INFERENCE_COUNT, // Convert BITMASK to BITPLANE (mask -> plane bit 0)
 };
 
 enum class ResultKind : uint8_t {
@@ -44,6 +49,7 @@ struct Node {
     Node* left = nullptr;         // Left operand
     Node* right = nullptr;        // Right operand
     Node* cond = nullptr;         // For SELECT: condition
+    std::vector<Node*> operands;  // For SUM: variadic list of trees
 
     // Compile-time metadata (filled by JitCompiler during analysis)
     int slot_id = -1;             // Scratchpad slot ID (BITPLANE nodes only)
@@ -57,7 +63,7 @@ namespace builder {
 
 // Global node pool for tree construction (setup-time only, no heap during execute)
 struct NodePool {
-    static constexpr int MAX_NODES = 128;
+    static constexpr int MAX_NODES = 8192;
     ir::Node storage[MAX_NODES];
     int next_idx = 0;
 
@@ -85,8 +91,12 @@ APEX_API ir::Node* And(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* Or(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* Not(ir::Node* a) noexcept;
 APEX_API ir::Node* Select(ir::Node* cond, ir::Node* a, ir::Node* b) noexcept;
+APEX_API ir::Node* Mul(ir::Node* a, ir::Node* b) noexcept;
+APEX_API ir::Node* Popcnt(ir::Node* a) noexcept;
 APEX_API ir::Node* LSL(ir::Node* a, int shift) noexcept;
 APEX_API ir::Node* LSR(ir::Node* a, int shift) noexcept;
+APEX_API ir::Node* Sum(const std::vector<ir::Node*>& operands) noexcept;
+APEX_API ir::Node* InferenceCount(ir::Node* cond) noexcept;
 
 } // namespace builder
 

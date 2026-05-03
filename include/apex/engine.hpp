@@ -74,6 +74,7 @@ private:
         jit::ExprKernelFunc kernel;
         std::vector<const core::FieldDescriptor*> fields; // Maps index to descriptor
         ExecutionMode mode;
+        ir::ResultKind result_kind;
     };
 
     core::SchemaRegistry registry_;
