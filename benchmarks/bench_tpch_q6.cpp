@@ -119,6 +119,20 @@ int main() {
     // Task 5: Final Performance Report (moving compilation out of threads)
     auto kernel = engine.get_compiler().compile_expression(q6_filter, engine.get_registry(), "lineitem");
 
+    // [WARMUP] Prime the hardware, TLB, and CPU frequency
+    std::cout << "[WARMUP] Priming hardware with 10M rows...\n";
+    {
+        compute::BitSlicer slicer;
+        compute::ColumnBuffer buf0, buf1, buf2;
+        const uint64_t* ptrs[8] = {buf0.data, buf1.data, buf2.data};
+        uint64_t* scratch = nullptr;
+        posix_memalign((void**)&scratch, 64, 8 * 64 * sizeof(uint64_t));
+        for (int i = 0; i < 156250; ++i) { // ~10M rows
+            kernel(ptrs, scratch);
+        }
+        free(scratch);
+    }
+
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int t = 0; t < num_threads; ++t) {

@@ -12,6 +12,7 @@
 #include <cstring>
 #include <vector>
 #include <functional>
+#include <thread>
 
 namespace apex {
 
@@ -214,6 +215,71 @@ uint64_t ApexEngine::execute_parallel(const void* data_ptr, size_t row_count, in
     config.mode = expr_logic.mode;
 
     return compute::ParallelRunner::run(data_ptr, row_count, config, num_threads);
+}
+
+uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks) noexcept {
+    auto it = expr_logic_.find(std::string(schema_name));
+    if (it == expr_logic_.end()) return 0;
+    const auto& logic = it->second;
+    
+    size_t num_fields = logic.fields.size();
+    uint64_t total_matches = 0;
+    
+    uint64_t* scratchpad = nullptr;
+    if (posix_memalign((void**)&scratchpad, 64, 8 * 64 * sizeof(uint64_t)) != 0) return 0;
+    
+    const uint64_t* current_ptr = bit_planes;
+    const uint64_t* field_ptrs[8] = {nullptr};
+    
+    for (size_t b = 0; b < num_blocks; ++b) {
+        for (size_t f = 0; f < num_fields; ++f) {
+            field_ptrs[f] = current_ptr;
+            current_ptr += 64;
+        }
+        uint64_t mask = logic.kernel(field_ptrs, scratchpad);
+        total_matches += static_cast<uint64_t>(__builtin_popcountll(mask));
+    }
+    
+    free(scratchpad);
+    return total_matches;
+}
+
+uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks, int num_threads) noexcept {
+    auto it = expr_logic_.find(std::string(schema_name));
+    if (it == expr_logic_.end()) return 0;
+    const auto& logic = it->second;
+    size_t num_fields = logic.fields.size();
+
+    std::vector<std::thread> threads;
+    std::vector<uint64_t> results(num_threads, 0);
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            size_t start_block = (num_blocks / num_threads) * t;
+            size_t end_block = (t == num_threads - 1) ? num_blocks : start_block + (num_blocks / num_threads);
+            
+            uint64_t* scratchpad = nullptr;
+            if (posix_memalign((void**)&scratchpad, 64, 8 * 64 * sizeof(uint64_t)) != 0) return;
+            
+            const uint64_t* local_ptrs[8] = {nullptr};
+            const uint64_t* block_base = bit_planes + (start_block * num_fields * 64);
+
+            for (size_t b = start_block; b < end_block; ++b) {
+                for (size_t f = 0; f < num_fields; ++f) {
+                    local_ptrs[f] = block_base + (f * 64);
+                }
+                uint64_t mask = logic.kernel(local_ptrs, scratchpad);
+                results[t] += static_cast<uint64_t>(__builtin_popcountll(mask));
+                block_base += (num_fields * 64);
+            }
+            free(scratchpad);
+        });
+    }
+
+    uint64_t total = 0;
+    for (auto& th : threads) th.join();
+    for (uint64_t r : results) total += r;
+    return total;
 }
 
 } // namespace apex

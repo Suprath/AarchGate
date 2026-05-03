@@ -487,61 +487,86 @@ ExprKernelFunc JitCompiler::compile_expression(
         a.mvn(cmp_eq_regs[cmp_idx], xzr); // EQ starts at all 1s
     }
 
-    // Phase 2 Main Loop: Process each bit from 63 down to 0
-    Label phase2_loop_start = a.new_label();
-    Label phase2_loop_end = a.new_label();
+    // Phase 2: Hot Bit-Loop (Processing 64 planes)
+    // Optimization: Cache Node Pointers in x21-x28 if no arithmetic carry is needed.
+    std::unordered_map<ir::Node*, Gp> node_cache;
+    int node_cache_idx = 0;
+    bool can_cache = (analyzer.arithmetic_nodes.empty());
 
-    a.mov(bit_index, 63);
-    a.bind(phase2_loop_start);
-    a.cmp(bit_index, 0);
-    a.b(asmjit::a64::CondCode::kLT, phase2_loop_end);
-
-    auto get_bit = [&](ir::Node* operand, Gp& out_reg) {
-        if (!operand) return;
-        if (operand->kind == ir::NodeKind::LOAD) {
-            int field_offset = operand->field_idx * 8;
-            a.ldr(temp_ptr, Mem(field_planes_ptr, field_offset));
-            a.lsl(scratch3, bit_index, 3);
-            a.ldr(out_reg, Mem(temp_ptr, scratch3));
-        } else if (operand->kind == ir::NodeKind::CONST) {
-            uint64_t const_addr = reinterpret_cast<uint64_t>(const_bit_planes[operand]);
-            emit_mov_imm64(a, temp_ptr, const_addr);
-            a.lsl(scratch3, bit_index, 3);
-            a.ldr(out_reg, Mem(temp_ptr, scratch3));
-        } else if (operand->result_kind == ir::ResultKind::BITPLANE && operand->slot_id >= 0) {
-            int slot_offset = operand->slot_id * 512;
-            a.lsl(scratch3, bit_index, 3);
-            a.add(scratch3, scratch3, slot_offset);
-            a.ldr(out_reg, Mem(scratch_ptr, scratch3));
+    if (can_cache) {
+        // Collect unique LOAD and CONST nodes
+        std::vector<ir::Node*> unique_nodes;
+        for (auto* n : analyzer.load_nodes) {
+            if (std::find(unique_nodes.begin(), unique_nodes.end(), n) == unique_nodes.end())
+                unique_nodes.push_back(n);
         }
-    };
+        for (auto* n : analyzer.const_nodes) {
+            if (std::find(unique_nodes.begin(), unique_nodes.end(), n) == unique_nodes.end())
+                unique_nodes.push_back(n);
+        }
 
-    // Process each comparison independently using pre-allocated registers
-    for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 5; ++cmp_idx) {
-        ir::Node* cmp_node = comparison_nodes[cmp_idx];
-        Gp cmp_gt = cmp_gt_regs[cmp_idx];
-        Gp cmp_eq = cmp_eq_regs[cmp_idx];
-
-        if (cmp_node->kind == ir::NodeKind::LT || cmp_node->kind == ir::NodeKind::LE) {
-            get_bit(cmp_node->left, plane_a);
-            get_bit(cmp_node->right, plane_b);
-            // LT(A, B) = GT(B, A)
-            CircuitLibrary::emit_gt_64(a, plane_b, plane_a, cmp_gt, cmp_eq);
-        } else if (cmp_node->kind == ir::NodeKind::GT || cmp_node->kind == ir::NodeKind::GE) {
-            get_bit(cmp_node->left, plane_a);
-            get_bit(cmp_node->right, plane_b);
-            CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
-        } else if (cmp_node->kind == ir::NodeKind::EQ) {
-            get_bit(cmp_node->left, plane_a);
-            get_bit(cmp_node->right, plane_b);
-            // GT part of emit_gt_64 will be ignored for EQ, we only need cmp_eq
-            CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
+        for (auto* node : unique_nodes) {
+            if (node_cache_idx < 8) {
+                Gp cache_reg = carry_regs[node_cache_idx++];
+                node_cache[node] = cache_reg;
+                if (node->kind == ir::NodeKind::LOAD) {
+                    a.ldr(cache_reg, Mem(field_planes_ptr, node->field_idx * 8));
+                } else if (node->kind == ir::NodeKind::CONST) {
+                    uint64_t const_addr = reinterpret_cast<uint64_t>(const_bit_planes[node]);
+                    emit_mov_imm64(a, cache_reg, const_addr);
+                }
+            }
         }
     }
 
-    a.sub(bit_index, bit_index, 1);
-    a.b(phase2_loop_start);
-    a.bind(phase2_loop_end);
+     // Phase 2 Main Loop: Process each bit from 63 down to 0
+    // Optimization: FULL UNROLL (64x) to reach Silicon Limit.
+    // This eliminates all branches, induction variables, and lsl instructions.
+    for (int bit = 63; bit >= 0; --bit) {
+        int bit_offset = bit * 8;
+
+        auto get_bit_unrolled = [&](ir::Node* operand, Gp& out_reg) {
+            if (!operand) return;
+            if (node_cache.count(operand)) {
+                Gp cache_reg = node_cache[operand];
+                a.ldr(out_reg, Mem(cache_reg, bit_offset));
+                return;
+            }
+
+            if (operand->kind == ir::NodeKind::LOAD) {
+                int field_offset = operand->field_idx * 8;
+                a.ldr(temp_ptr, Mem(field_planes_ptr, field_offset));
+                a.ldr(out_reg, Mem(temp_ptr, bit_offset));
+            } else if (operand->kind == ir::NodeKind::CONST) {
+                uint64_t const_addr = reinterpret_cast<uint64_t>(const_bit_planes[operand]);
+                emit_mov_imm64(a, temp_ptr, const_addr);
+                a.ldr(out_reg, Mem(temp_ptr, bit_offset));
+            } else if (operand->result_kind == ir::ResultKind::BITPLANE && operand->slot_id >= 0) {
+                int slot_offset = operand->slot_id * 512 + bit_offset;
+                a.ldr(out_reg, Mem(scratch_ptr, slot_offset));
+            }
+        };
+
+        for (int cmp_idx = 0; cmp_idx < num_comparisons && cmp_idx < 5; ++cmp_idx) {
+            ir::Node* cmp_node = comparison_nodes[cmp_idx];
+            Gp cmp_gt = cmp_gt_regs[cmp_idx];
+            Gp cmp_eq = cmp_eq_regs[cmp_idx];
+
+            if (cmp_node->kind == ir::NodeKind::LT || cmp_node->kind == ir::NodeKind::LE) {
+                get_bit_unrolled(cmp_node->left, plane_a);
+                get_bit_unrolled(cmp_node->right, plane_b);
+                CircuitLibrary::emit_gt_64(a, plane_b, plane_a, cmp_gt, cmp_eq);
+            } else if (cmp_node->kind == ir::NodeKind::GT || cmp_node->kind == ir::NodeKind::GE) {
+                get_bit_unrolled(cmp_node->left, plane_a);
+                get_bit_unrolled(cmp_node->right, plane_b);
+                CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
+            } else if (cmp_node->kind == ir::NodeKind::EQ) {
+                get_bit_unrolled(cmp_node->left, plane_a);
+                get_bit_unrolled(cmp_node->right, plane_b);
+                CircuitLibrary::emit_gt_64(a, plane_a, plane_b, cmp_gt, cmp_eq);
+            }
+        }
+    }
 
     // AND-fold all GT/GE/LE/EQ masks to produce final result
     Gp final_result = x0;
