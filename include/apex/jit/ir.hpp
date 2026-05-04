@@ -52,9 +52,12 @@ struct Node {
     std::vector<Node*> operands;  // For SUM: variadic list of trees
 
     // Compile-time metadata (filled by JitCompiler during analysis)
-    int slot_id = -1;             // Scratchpad slot ID (BITPLANE nodes only)
+    int slot_id = -1;             // Scratchpad slot ID (BITPLANE/BITMASK result)
+    int eq_slot_id = -1;          // Scratchpad slot ID for EQ mask (Comparison nodes)
     int field_idx = -1;           // Field index in field_planes array (LOAD nodes)
-    int carry_reg = -1;           // Which callee-saved register holds carry (x24+)
+    int carry_reg = -1;           // Which callee-saved register holds carry (x23-x28)
+    bool skip_jit = false;        // If true, JIT compiler skips this node
+    int active_bits = 64;         // Max bits to evaluate (optimization)
 };
 
 } // namespace ir

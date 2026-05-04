@@ -42,6 +42,7 @@ set(APEX_SOURCES
     src/jit/compiler.cpp
     src/compute/compute.cpp
     src/compute/bit_slicer.cpp
+    src/compute/bit_slicer_fast.cpp
     src/compute/parallel_runner.cpp
     src/api/api.cpp
     src/api/engine.cpp

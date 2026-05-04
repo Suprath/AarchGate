@@ -53,7 +53,7 @@ static void worker_thread(
 
     // Use heap-allocated aligned memory for scratchpad to avoid stack alignment issues
     uint64_t* scratchpad = nullptr;
-    if (posix_memalign((void**)&scratchpad, 64, 8 * 64 * sizeof(uint64_t)) != 0) {
+    if (posix_memalign((void**)&scratchpad, 64, 32768 * sizeof(uint64_t)) != 0) {
         result->count = 0;
         result->cycles = 0;
         return;
@@ -61,7 +61,7 @@ static void worker_thread(
 
     // Ensure it's cleared
     if (scratchpad) {
-        std::memset(scratchpad, 0, 8 * 64 * sizeof(uint64_t));
+        std::memset(scratchpad, 0, 32768 * sizeof(uint64_t));
     } else {
         result->count = 0;
         result->cycles = 0;
@@ -123,22 +123,30 @@ static void worker_thread(
             }
 
             if (config.mode == ExecutionMode::BIT_SLICED) {
-                slicer.slice(field_buffers[f], field_buffers[f]);
+                slicer.slice_n(field_buffers[f].data, 64, field_planes[f], config.active_bits);
+            } else {
+                field_planes[f] = field_buffers[f].data;
             }
-            field_planes[f] = field_buffers[f].data;
         }
 
-        // Execute JIT kernel — result depends on result_kind
-        uint64_t result = config.kernel(field_planes, scratchpad);
+        // Execute JIT kernel
+        uint64_t kernel_res = config.kernel(field_planes, scratchpad);
 
-        // Aggregate matches based on result kind
-        if (config.result_kind == 1) {  // BITMASK (1): popcnt the return value
-            total_matches += static_cast<uint64_t>(__builtin_popcountll(result));
-        } else if (config.result_kind == 0) {  // BITPLANE (0): Sum(popcount(Plane_i) * 2^i)
-            // Result is stored in scratchpad as 64 bit-planes
+        uint64_t rows_mask = (rows_in_chunk == 64) ? ~0ULL : (1ULL << rows_in_chunk) - 1;
+
+        if (config.result_kind == 1) { // BITMASK
+            total_matches += static_cast<uint64_t>(__builtin_popcountll(kernel_res & rows_mask));
+        } else if (!config.delta_weights.empty()) { // HYBRID POPCOUNT
+            int64_t chunk_sum = static_cast<int64_t>(config.base_sum) * rows_in_chunk;
+            for (size_t i = 0; i < config.delta_weights.size(); ++i) {
+                int mask_slot = config.masks_to_popcount[i];
+                int64_t pop = __builtin_popcountll(scratchpad[mask_slot]);
+                chunk_sum += pop * config.delta_weights[i];
+            }
+            total_matches += static_cast<uint64_t>(chunk_sum);
+        } else { // BITPLANE
             for (int i = 0; i < 64; ++i) {
-                uint64_t plane = scratchpad[i];
-                total_matches += (static_cast<uint64_t>(__builtin_popcountll(plane)) << i);
+                total_matches += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i] & rows_mask))) << i;
             }
         }
     }

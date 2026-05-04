@@ -79,6 +79,7 @@ private:
         // --- Hybrid Popcount Aggregation ---
         uint64_t base_sum = 0;
         std::vector<int64_t> delta_weights;
+        std::vector<int> masks_to_popcount;
     };
 
     core::SchemaRegistry registry_;

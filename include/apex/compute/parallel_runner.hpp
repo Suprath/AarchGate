@@ -17,9 +17,13 @@ public:
         std::vector<const core::FieldDescriptor*> fields;
         size_t row_stride;
         ExecutionMode mode;
-        int result_kind;  // ir::ResultKind: 0=BITMASK, 1=SCALAR, 2=HYBRID
-        uint64_t base_sum;
+        int result_kind = 0;  // 0=BITPLANE (arithmetic), 1=BITMASK (boolean)
+
+        // --- Hybrid Popcount Aggregation ---
+        uint64_t base_sum = 0;
         std::vector<int64_t> delta_weights;
+        std::vector<int> masks_to_popcount;
+        int active_bits = 64; 
     };
 
     // Per-thread BITPLANE aggregation result with execution statistics

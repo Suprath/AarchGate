@@ -2,6 +2,8 @@
 build/
 build-release/
 build_perf/
+build-final/
+build-docker/
 cmake-build-debug/
 cmake-build-release/
 bin/

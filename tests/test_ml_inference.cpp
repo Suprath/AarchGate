@@ -22,12 +22,12 @@ int main() {
     std::cout << "=== AarchGate ML Inference Verification (Phase 1) ===" << std::endl;
 
     ApexEngine engine;
-    
+
     // Define schema using FieldDescriptors
     std::vector<core::FieldDescriptor> fields;
     fields.emplace_back("Field0", 0, 64, core::DataType::UINT64);
     fields.emplace_back("Field1", 8, 64, core::DataType::UINT64);
-    
+
     // Register schema (Field0 at offset 0, Field1 at offset 8, Total stride 16 bytes)
     engine.register_schema("ml_schema", fields, 16);
 
@@ -35,16 +35,16 @@ int main() {
     // Tree1: (Field0 > 100) ? 50 : 10
     // Tree2: (Field1 < 50) ? 20 : 5
     // Result = Tree1 + Tree2
-    
+
     auto* feature_a = Load("Field0");
     auto* feature_b = Load("Field1");
-    
+
     auto* tree1 = Select(GT(feature_a, Const(100)), Const(50), Const(10));
     auto* tree2 = Select(LT(feature_b, Const(50)), Const(20), Const(5));
-    
+
     // Combine the trees (Decision Forest)
-    auto* model = Add(tree1, tree2); 
-    
+    auto* model = Add(tree1, tree2);
+
     // Use set_expression instead of compile_expression
     engine.set_expression("ml_schema", model);
 
@@ -56,13 +56,13 @@ int main() {
     for (size_t i = 0; i < num_rows; ++i) {
         data[i].field0 = (i % 200); // 0-199
         data[i].field1 = (i % 100); // 0-99
-        
+
         // Scalar reference:
         // Tree1: (Field0 > 100) ? 50 : 10
         uint64_t v1 = (data[i].field0 > 100) ? 50 : 10;
         // Tree2: (Field1 < 50) ? 20 : 5
         uint64_t v2 = (data[i].field1 < 50) ? 20 : 5;
-        
+
         expected_matches += (v1 + v2);
     }
 

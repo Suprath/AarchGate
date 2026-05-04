@@ -115,8 +115,8 @@ int main() {
 
             const uint64_t* field_planes[] = {bit_planes.data};
             uint64_t* scratch = nullptr;
-            posix_memalign((void**)&scratch, 64, 4096);
-            std::memset(scratch, 0, 4096);
+            posix_memalign((void**)&scratch, 64, 8192);
+            std::memset(scratch, 0, 8192);
 
             uint64_t result = kernel(field_planes, scratch);
             uint64_t expected = 0xFFFFFFFFFFFFF800ULL;

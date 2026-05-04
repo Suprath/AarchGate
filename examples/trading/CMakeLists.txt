@@ -42,3 +42,19 @@ add_test(NAME TradingHybridSDK COMMAND test_hybrid_sdk)
 add_executable(bench_10b_rps bench_10b_rps.cpp)
 target_include_directories(bench_10b_rps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
 target_link_libraries(bench_10b_rps PRIVATE aarchgate)
+
+add_executable(bench_10b_rps_debug bench_10b_rps_debug.cpp)
+target_include_directories(bench_10b_rps_debug PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_link_libraries(bench_10b_rps_debug PRIVATE aarchgate)
+
+add_executable(bench_simple bench_simple.cpp)
+target_include_directories(bench_simple PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_link_libraries(bench_simple PRIVATE aarchgate)
+
+add_executable(bench_with_and bench_with_and.cpp)
+target_include_directories(bench_with_and PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_link_libraries(bench_with_and PRIVATE aarchgate)
+
+add_executable(bench_with_sub bench_with_sub.cpp)
+target_include_directories(bench_with_sub PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_link_libraries(bench_with_sub PRIVATE aarchgate)
