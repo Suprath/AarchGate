@@ -123,7 +123,8 @@ static void worker_thread(
             }
 
             if (config.mode == ExecutionMode::BIT_SLICED) {
-                slicer.slice_n(field_buffers[f].data, 64, field_planes[f], config.active_bits);
+                slicer.slice_n(field_buffers[f].data, 64, const_cast<uint64_t*>(field_buffers[f].data), config.active_bits);
+                field_planes[f] = field_buffers[f].data;
             } else {
                 field_planes[f] = field_buffers[f].data;
             }

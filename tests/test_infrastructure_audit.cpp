@@ -273,6 +273,54 @@ int main() {
         if (jitter < 0.15) passed_tests++;
     }
 
+    // =====================================================================
+    // TEST 8: HYBRID AGGREGATOR (RANDOM FOREST PATH)
+    // =====================================================================
+    {
+        print_header("Test 8: Hybrid Aggregator (RF Path)");
+        total_tests++;
+
+        auto engine = std::make_unique<apex::ApexEngine>();
+        std::vector<apex::core::FieldDescriptor> fields = {
+            {"f0", 0, 64, apex::core::DataType::UINT64}
+        };
+        engine->register_schema("rf_test", fields, 8);
+
+        // Build a 4-tree forest
+        using namespace apex::builder;
+        std::vector<apex::ir::Node*> trees;
+        trees.push_back(Select(GT(Load("f0"), Const(10)), Const(100), Const(1)));
+        trees.push_back(Select(GT(Load("f0"), Const(20)), Const(200), Const(2)));
+        trees.push_back(Select(GT(Load("f0"), Const(30)), Const(300), Const(3)));
+        trees.push_back(Select(GT(Load("f0"), Const(40)), Const(400), Const(4)));
+        
+        engine->set_expression("rf_test", Sum(trees));
+
+        std::vector<uint8_t> data(8 * 64);
+        for (int i = 0; i < 64; ++i) {
+            uint64_t val = i;
+            std::memcpy(&data[i*8], &val, 8);
+        }
+
+        uint64_t result = engine->execute(data.data(), 64);
+        
+        // Expected: 
+        // Row i < 11: 1+2+3+4 = 10
+        // Row 10 < i < 21: 100+2+3+4 = 109
+        // Row 20 < i < 31: 100+200+3+4 = 307
+        // Row 30 < i < 41: 100+200+300+4 = 604
+        // Row i > 40: 100+200+300+400 = 1000
+        
+        uint64_t expected = (11 * 10) + (10 * 109) + (10 * 307) + (10 * 604) + (23 * 1000);
+        bool match = (result == expected);
+
+        std::cout << "  Forest result                 : " << result << "\n";
+        std::cout << "  Expected result               : " << expected << "\n";
+        
+        print_result("Hybrid Aggregator Accuracy", static_cast<double>(result), "matches", static_cast<double>(expected), match);
+        if (match) passed_tests++;
+    }
+
     std::cout << "\nAudit Summary: " << passed_tests << " / " << total_tests << " passed.\n";
     return (passed_tests == total_tests) ? 0 : 1;
 }

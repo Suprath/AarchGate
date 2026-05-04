@@ -27,10 +27,10 @@ public:
 
     KernelFunc compile_comparison(uint64_t threshold) noexcept;
 
-    ExprKernelFunc compile_expression(
-        ir::Node* root,
-        const core::SchemaRegistry& registry,
-        std::string_view schema_name) noexcept;
+    ExprKernelFunc compile_expression(ir::Node* root, 
+                                     core::SchemaRegistry& registry,
+                                     std::string_view schema_name,
+                                     int active_bits = 64) noexcept;
 
     ExprKernelFunc compile_scalar_expression(
         ir::Node* root,

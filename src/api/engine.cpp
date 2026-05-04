@@ -60,51 +60,77 @@ void ApexEngine::set_logic(std::string_view schema_name,
 }
 
 void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_root, ExecutionMode mode) noexcept {
+    if (!expr_root) return;
+
+    // STEP 1: Analyze active bits (only reads CONST values — safe before compilation)
+    int active_bits = 0;
+    std::function<void(const ir::Node*)> analyze_bits = [&](const ir::Node* n) {
+        if (!n) return;
+        if (n->kind == ir::NodeKind::CONST) {
+            uint64_t val = static_cast<uint64_t>(n->const_value);
+            int bits = (val == 0) ? 1 : 64 - __builtin_clzll(val);
+            active_bits = std::max(active_bits, bits);
+        }
+        for (auto* op : n->operands) analyze_bits(op);
+        if (n->left)  analyze_bits(n->left);
+        if (n->right) analyze_bits(n->right);
+    };
+    analyze_bits(expr_root);
+    // Always use full 64-bit comparison. The active_bits optimization (using fewer bit-planes)
+    // is only safe when field VALUES are also bounded (e.g., RF model lookup indices),
+    // not just when the threshold constant is small. Since we cannot know field value ranges
+    // at compile time, default to 64-bit precision for correctness.
+    // TODO: Add an explicit RF-mode flag to re-enable the narrowed optimization.
+    active_bits = 64;
+
+    // STEP 1.5: Mark SUM and SELECT nodes as skip_jit BEFORE compilation
+    // so the compiler knows they are handled natively by the engine.
+    if (expr_root->kind == ir::NodeKind::SUM) {
+        expr_root->skip_jit = true;
+        for (auto* op : expr_root->operands) {
+            if (op->kind == ir::NodeKind::SELECT) {
+                op->skip_jit = true;
+            }
+        }
+    }
+
+    // STEP 2: Compile — ExpressionAnalyzer sets node->field_idx and node->slot_id
     jit::ExprKernelFunc kernel = nullptr;
     if (mode == ExecutionMode::BIT_SLICED) {
-        kernel = compiler_.compile_expression(expr_root, registry_, schema_name);
+        kernel = compiler_.compile_expression(expr_root, registry_, schema_name, active_bits);
     } else {
         kernel = compiler_.compile_scalar_expression(expr_root, registry_, schema_name);
     }
     if (!kernel) return;
 
-    // Collect referenced fields from the expression tree into their JIT-assigned slots
-    std::vector<const core::FieldDescriptor*> fields(8, nullptr); 
-
+    // STEP 3: Collect field descriptors (node->field_idx is now valid)
+    std::vector<const core::FieldDescriptor*> fields(8, nullptr);
     std::function<void(ir::Node*)> collect_fields = [&](ir::Node* node) {
         if (!node) return;
         if (node->kind == ir::NodeKind::LOAD) {
             int idx = node->field_idx;
             if (idx >= 0 && idx < 8) {
                 const auto* field = registry_.get_field(schema_name, std::string_view(node->field_name));
-                if (field) {
-                    fields[idx] = field;
-                }
+                if (field) fields[idx] = field;
             }
         }
         collect_fields(node->left);
         collect_fields(node->right);
         collect_fields(node->cond);
-        // SUM and other variadic nodes store children in operands, not left/right
-        for (auto* op : node->operands) {
-            collect_fields(op);
-        }
+        for (auto* op : node->operands) collect_fields(op);
     };
-
     collect_fields(expr_root);
 
-    // Trim the fields vector to remove trailing nulls, but keep internal nulls if any field was missing
     size_t max_idx = 0;
-    for (int i = 0; i < 8; ++i) {
-        if (fields[i]) max_idx = i + 1;
-    }
+    for (int i = 0; i < 8; ++i) if (fields[i]) max_idx = i + 1;
     fields.resize(max_idx);
 
+    // STEP 4: Extract SUM/SELECT metadata (node->slot_id is now valid)
     uint64_t base_sum = 0;
     std::vector<int64_t> delta_weights;
     std::vector<int> masks_to_popcount;
 
-    if (expr_root && expr_root->kind == ir::NodeKind::SUM) {
+    if (expr_root->kind == ir::NodeKind::SUM) {
         for (auto* op : expr_root->operands) {
             if (op->kind == ir::NodeKind::SELECT) {
                 uint64_t w1 = op->left->const_value;
@@ -112,15 +138,24 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
                 base_sum += w2;
                 delta_weights.push_back(static_cast<int64_t>(w1) - static_cast<int64_t>(w2));
                 masks_to_popcount.push_back(op->cond->slot_id);
-                op->skip_jit = true; // Optimization: Sum logic handles SELECT
             }
         }
     }
 
-    std::string expr_key = std::string(schema_name);
-    ExprCompiledLogic compiled = {kernel, fields, mode, expr_root->result_kind, base_sum, std::move(delta_weights), std::move(masks_to_popcount)};
-    expr_logic_[expr_key] = std::move(compiled);
+    // STEP 5: Store compiled logic
+    ExprCompiledLogic compiled;
+    compiled.kernel          = kernel;
+    compiled.fields          = std::move(fields);
+    compiled.mode            = mode;
+    compiled.result_kind     = expr_root->result_kind;
+    compiled.base_sum        = base_sum;
+    compiled.delta_weights   = std::move(delta_weights);
+    compiled.masks_to_popcount = std::move(masks_to_popcount);
+    compiled.active_bits     = active_bits;
+
+    expr_logic_[std::string(schema_name)] = std::move(compiled);
 }
+
 
 void ApexEngine::gather_field(const void* data_ptr,
                              const core::FieldDescriptor* field,
@@ -167,7 +202,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
         if (expr_logic.fields[i]) {
             gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
             if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
-                slicer_.slice(field_buffers_[i], field_buffers_[i]);
+                slicer_.slice_n(field_buffers_[i].data, 64, static_cast<uint64_t*>(field_buffers_[i].data), expr_logic.active_bits);
             }
             field_planes_array_[i] = field_buffers_[i].data;
         } else {
@@ -236,6 +271,8 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
     }
 
     // Fall back to legacy single-field logic
+    int active_bits = 64;
+
     if (compiled_logic_.empty()) return 0;
 
     const auto& [logic_key, logic] = *compiled_logic_.begin();
@@ -251,7 +288,7 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
         size_t rows_in_chunk = std::min(size_t(64), row_count - chunk * 64);
 
         gather_field(chunk_ptr, logic.field, row_stride, rows_in_chunk, field_buffers_[0]);
-        slicer_.slice(field_buffers_[0], field_buffers_[0]);
+        slicer_.slice_n(field_buffers_[0].data, 64, field_buffers_[0].data, active_bits);
         
         uint64_t chunk_mask = logic.kernel(field_buffers_[0].data);
         total_matches += static_cast<uint64_t>(__builtin_popcountll(chunk_mask));
@@ -280,7 +317,7 @@ uint64_t ApexEngine::execute_parallel(const void* data_ptr, size_t row_count, in
     config.base_sum = expr_logic.base_sum;
     config.delta_weights = expr_logic.delta_weights;
     config.masks_to_popcount = expr_logic.masks_to_popcount;
-    config.active_bits = 10; 
+    config.active_bits = expr_logic.active_bits;
 
     return compute::ParallelRunner::run(data_ptr, row_count, config, num_threads);
 }

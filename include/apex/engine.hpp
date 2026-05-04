@@ -80,6 +80,7 @@ private:
         uint64_t base_sum = 0;
         std::vector<int64_t> delta_weights;
         std::vector<int> masks_to_popcount;
+        int active_bits = 64;
     };
 
     core::SchemaRegistry registry_;

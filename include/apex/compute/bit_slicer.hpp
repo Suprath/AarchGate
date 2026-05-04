@@ -12,7 +12,7 @@ public:
     void slice(const ColumnBuffer& in, ColumnBuffer& out) noexcept;
 
     /// Slice only the first N bits of the 64-bit input values.
-    void slice_n(const uint64_t* data, size_t count, const uint64_t*& out_planes, int n) noexcept;
+    void slice_n(const uint64_t* data, size_t count, uint64_t* out_planes, int n) noexcept;
 };
 
 } // namespace apex::compute

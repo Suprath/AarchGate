@@ -3,11 +3,21 @@ build/
 build-release/
 build_perf/
 build-final/
+build-clean/
 build-docker/
 cmake-build-debug/
 cmake-build-release/
 bin/
 out/
+build*/
+
+# Build artifacts
+compile_commands.json
+CMakeCache.txt
+*.ninja_log
+*.ninja_deps
+.ninja_log
+.ninja_deps
 
 # Compiled libraries
 *.so
