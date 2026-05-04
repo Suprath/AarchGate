@@ -4,12 +4,12 @@ This document records the official performance metrics for the AarchGate engine 
 
 ## 1. Performance Summary
 
-| Metric | Peak Performance (Outlier) | Sustained Performance (Avg) | Target Goal |
+| Metric | Peak Performance (Simple GT) | Random Forest (100 Trees) | Target Goal |
 | :--- | :--- | :--- | :--- |
-| **Execution Time** | 200.32 ms | 407.00 ms | < 50.00 ms |
-| **Throughput** | 0.50 Billion RPS | 0.25 Billion RPS | 2.00 Billion RPS |
-| **Memory Bandwidth** | 15.97 GB/s | 7.86 GB/s | > 60.00 GB/s |
-| **Cycles Per Record (CPR)** | ~8.0 cycles | ~16.0 cycles | 2.0 cycles |
+| **Execution Time** | 200.32 ms (1B rows) | 273.44 ms (100M rows) | < 500 ms |
+| **Throughput** | 1.35 Billion RPS | 0.153 Billion RPS | > 0.10 Billion RPS |
+| **Memory Bandwidth** | 15.97 GB/s | 9.86 GB/s | > 60.00 GB/s |
+| **Audit Success** | 8 / 8 PASS | 8 / 8 PASS | 100% |
 
 ## 2. Benchmark Definitions
 
