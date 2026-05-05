@@ -2,6 +2,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "apex/apex_c_api.h"
+#include "apex/engine.hpp"
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
@@ -70,6 +71,20 @@ static uint64_t py_execute_parallel(PyApexEngine& engine, py::buffer b, size_t c
     return apex_execute_parallel(engine.get_handle(), info.ptr, count, num_threads);
 }
 
+static uint64_t py_execute_native(PyApexEngine& engine, const char* schema_name, py::buffer b, size_t num_blocks) {
+    py::buffer_info info = b.request();
+    py::gil_scoped_release release;
+    apex::ApexEngine* eng = static_cast<apex::ApexEngine*>(engine.get_handle());
+    return eng->execute_native(schema_name, static_cast<const uint64_t*>(info.ptr), num_blocks);
+}
+
+static uint64_t py_execute_native_parallel(PyApexEngine& engine, const char* schema_name, py::buffer b, size_t num_blocks, int num_threads) {
+    py::buffer_info info = b.request();
+    py::gil_scoped_release release;
+    apex::ApexEngine* eng = static_cast<apex::ApexEngine*>(engine.get_handle());
+    return eng->execute_native_parallel(schema_name, static_cast<const uint64_t*>(info.ptr), num_blocks, num_threads);
+}
+
 // Builder functions
 static py::capsule py_builder_load(const char* name) {
     return py::capsule(apex_builder_load(name));
@@ -134,6 +149,8 @@ PYBIND11_MODULE(aarchgate_python, m) {
     m.def("set_logic", &py_set_logic);
     m.def("execute", &py_execute);
     m.def("execute_parallel", &py_execute_parallel);
+    m.def("execute_native", &py_execute_native);
+    m.def("execute_native_parallel", &py_execute_native_parallel);
 
     m.def("builder_Load", &py_builder_load);
     m.def("builder_Const", &py_builder_const);

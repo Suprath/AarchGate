@@ -393,26 +393,44 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
     if (it == expr_logic_.end()) return 0;
     const auto& logic = it->second;
     
+    auto schema_it = schema_metadata_.find(std::string(schema_name));
+    if (schema_it == schema_metadata_.end()) return 0;
+    const auto& schema_fields = schema_it->second.fields;
+    
     size_t num_fields = logic.fields.size();
+    size_t schema_num_fields = schema_fields.size();
+    std::vector<size_t> dynamic_to_schema_index(num_fields, 0);
+    for (size_t i = 0; i < num_fields; ++i) {
+        if (logic.fields[i]) {
+            std::string_view name = logic.fields[i]->name;
+            for (size_t f = 0; f < schema_fields.size(); ++f) {
+                if (schema_fields[f].name == name) {
+                    dynamic_to_schema_index[i] = f;
+                    break;
+                }
+            }
+        }
+    }
+
     uint64_t total_matches = 0;
     
     uint64_t* scratchpad = nullptr;
     if (posix_memalign((void**)&scratchpad, 64, 262144 * sizeof(uint64_t)) != 0) return 0;
     std::memset(scratchpad, 0, 262144 * sizeof(uint64_t));
     
-    const uint64_t* current_ptr = bit_planes;
-    const uint64_t* field_ptrs[8] = {nullptr};
-    
     for (size_t b = 0; b < num_blocks; ++b) {
-        for (size_t f = 0; f < num_fields; ++f) {
-            field_ptrs[f] = current_ptr;
-            current_ptr += 64;
+        const uint64_t* block_base = bit_planes + (b * schema_num_fields * 64);
+        
+        const uint64_t* kernel_ptrs[8] = {nullptr};
+        for (size_t i = 0; i < num_fields; ++i) {
+            kernel_ptrs[i] = block_base + (dynamic_to_schema_index[i] * 64);
         }
+
         if (logic.result_kind == ir::ResultKind::BITMASK) {
-            uint64_t mask = logic.kernel(field_ptrs, scratchpad);
+            uint64_t mask = logic.kernel(kernel_ptrs, scratchpad);
             total_matches += static_cast<uint64_t>(__builtin_popcountll(mask));
         } else if (!logic.delta_weights.empty()) {
-            logic.kernel(field_ptrs, scratchpad);
+            logic.kernel(kernel_ptrs, scratchpad);
             
             // SIMD Aggregation: Process 16 masks at once
             // This is the key to 100M+ RPS
@@ -434,7 +452,7 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
             }
             total_matches += static_cast<uint64_t>(chunk_sum);
         } else {
-            logic.kernel(field_ptrs, scratchpad);
+            logic.kernel(kernel_ptrs, scratchpad);
             for (int i = 0; i < 64; ++i) {
                 total_matches += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i]))) << i;
             }
@@ -450,7 +468,25 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
     auto it = expr_logic_.find(std::string(schema_name));
     if (it == expr_logic_.end()) return 0;
     const auto& logic = it->second;
+    
+    auto schema_it = schema_metadata_.find(std::string(schema_name));
+    if (schema_it == schema_metadata_.end()) return 0;
+    const auto& schema_fields = schema_it->second.fields;
+    
     size_t num_fields = logic.fields.size();
+    size_t schema_num_fields = schema_fields.size();
+    std::vector<size_t> dynamic_to_schema_index(num_fields, 0);
+    for (size_t i = 0; i < num_fields; ++i) {
+        if (logic.fields[i]) {
+            std::string_view name = logic.fields[i]->name;
+            for (size_t f = 0; f < schema_fields.size(); ++f) {
+                if (schema_fields[f].name == name) {
+                    dynamic_to_schema_index[i] = f;
+                    break;
+                }
+            }
+        }
+    }
 
     std::vector<std::thread> threads;
     std::vector<uint64_t> results(num_threads, 0);
@@ -464,19 +500,19 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
             if (posix_memalign((void**)&scratchpad, 64, 262144 * sizeof(uint64_t)) != 0) return;
             std::memset(scratchpad, 0, 262144 * sizeof(uint64_t));
             
-            const uint64_t* local_ptrs[8] = {nullptr};
-            const uint64_t* block_base = bit_planes + (start_block * num_fields * 64);
-
             for (size_t b = start_block; b < end_block; ++b) {
-                for (size_t f = 0; f < num_fields; ++f) {
-                    local_ptrs[f] = block_base + (f * 64);
+                const uint64_t* block_base = bit_planes + (b * schema_num_fields * 64);
+
+                const uint64_t* kernel_ptrs[8] = {nullptr};
+                for (size_t i = 0; i < num_fields; ++i) {
+                    kernel_ptrs[i] = block_base + (dynamic_to_schema_index[i] * 64);
                 }
 
                 if (logic.result_kind == ir::ResultKind::BITMASK) {
-                    uint64_t mask = logic.kernel(local_ptrs, scratchpad);
+                    uint64_t mask = logic.kernel(kernel_ptrs, scratchpad);
                     results[t] += static_cast<uint64_t>(__builtin_popcountll(mask));
                 } else if (!logic.delta_weights.empty()) {
-                    logic.kernel(local_ptrs, scratchpad);
+                    logic.kernel(kernel_ptrs, scratchpad);
                     int64_t chunk_sum = static_cast<int64_t>(logic.base_sum) * 64;
                     size_t i = 0;
                     for (; i + 16 <= logic.delta_weights.size(); i += 16) {
@@ -489,12 +525,11 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
                     }
                     results[t] += static_cast<uint64_t>(chunk_sum);
                 } else {
-                    logic.kernel(local_ptrs, scratchpad);
+                    logic.kernel(kernel_ptrs, scratchpad);
                     for (int i = 0; i < 64; ++i) {
                         results[t] += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i]))) << i;
                     }
                 }
-                block_base += (num_fields * 64);
             }
             free(scratchpad);
         });
