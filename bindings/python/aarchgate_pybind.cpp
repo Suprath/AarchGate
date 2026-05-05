@@ -60,11 +60,13 @@ static void py_set_logic(PyApexEngine& engine, const char* schema_name, py::caps
 
 static uint64_t py_execute(PyApexEngine& engine, py::buffer b, size_t count) {
     py::buffer_info info = b.request();
+    py::gil_scoped_release release;
     return apex_execute(engine.get_handle(), info.ptr, count);
 }
 
 static uint64_t py_execute_parallel(PyApexEngine& engine, py::buffer b, size_t count, int num_threads) {
     py::buffer_info info = b.request();
+    py::gil_scoped_release release;
     return apex_execute_parallel(engine.get_handle(), info.ptr, count, num_threads);
 }
 

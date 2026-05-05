@@ -11,12 +11,107 @@
 #include <algorithm>
 #include <cstring>
 #include <arm_neon.h>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 
 #ifdef __APPLE__
 #include <pthread.h>
 #endif
 
 namespace apex::compute {
+
+struct PaddedResult;
+static void worker_thread(
+    const uint8_t* base,
+    size_t start_row,
+    size_t end_row,
+    const ParallelRunner::TaskConfig& config,
+    PaddedResult* result) noexcept;
+
+struct WorkerTask {
+    const uint8_t* base;
+    size_t start_row;
+    size_t end_row;
+    const ParallelRunner::TaskConfig* config;
+    PaddedResult* result;
+};
+
+class ThreadPool {
+private:
+    std::vector<std::thread> workers_;
+    std::queue<WorkerTask> tasks_;
+    std::mutex queue_mutex_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    int active_workers_ = 0;
+    std::condition_variable wait_cv_;
+
+    void worker_loop() {
+#ifdef __APPLE__
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+        while (true) {
+            WorkerTask task;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex_);
+                cv_.wait(lock, [this]() { return stop_ || !tasks_.empty(); });
+                if (stop_ && tasks_.empty()) return;
+                task = std::move(tasks_.front());
+                tasks_.pop();
+                active_workers_++;
+            }
+
+            worker_thread(task.base, task.start_row, task.end_row, *task.config, task.result);
+
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex_);
+                active_workers_--;
+                if (tasks_.empty() && active_workers_ == 0) {
+                    wait_cv_.notify_all();
+                }
+            }
+        }
+    }
+
+public:
+    ThreadPool(size_t threads) {
+        for (size_t i = 0; i < threads; ++i) {
+            workers_.emplace_back(&ThreadPool::worker_loop, this);
+        }
+    }
+
+    void enqueue(WorkerTask task) {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            tasks_.push(std::move(task));
+        }
+        cv_.notify_one();
+    }
+
+    void wait_all() {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        wait_cv_.wait(lock, [this]() { return tasks_.empty() && active_workers_ == 0; });
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        for (std::thread& worker : workers_) {
+            if (worker.joinable()) worker.join();
+        }
+    }
+};
+
+static ThreadPool& get_global_pool() {
+    static size_t num_cores = std::thread::hardware_concurrency();
+    if (num_cores == 0) num_cores = 4;
+    static ThreadPool pool(num_cores);
+    return pool;
+}
 
 // Cache-line padded result slot to prevent false sharing between threads
 // Stores both the BITPLANE result count and execution statistics
@@ -101,17 +196,71 @@ static void worker_thread(
         bool use_simd_5 = true; 
 
         if (use_simd_5) {
-            for (size_t r = 0; r < rows_in_chunk; ++r) {
-                const uint64_t* row_ptr = reinterpret_cast<const uint64_t*>(chunk_base + r * row_stride);
-                uint64x2_t v01 = vld1q_u64(row_ptr);
-                uint64x2_t v23 = vld1q_u64(row_ptr + 2);
-                uint64_t v4 = row_ptr[4];
-                
-                field_buffers[0].data[r] = vgetq_lane_u64(v01, 0);
-                field_buffers[1].data[r] = vgetq_lane_u64(v01, 1);
-                field_buffers[2].data[r] = vgetq_lane_u64(v23, 0);
-                field_buffers[3].data[r] = vgetq_lane_u64(v23, 1);
-                field_buffers[4].data[r] = v4;
+            if (rows_in_chunk == 64) {
+                for (size_t r = 0; r < 64; r += 4) {
+                    const uint8_t* cb0 = chunk_base + r * row_stride;
+                    const uint8_t* cb1 = cb0 + row_stride;
+                    const uint8_t* cb2 = cb1 + row_stride;
+                    const uint8_t* cb3 = cb2 + row_stride;
+
+                    const uint64_t* rp0 = reinterpret_cast<const uint64_t*>(cb0);
+                    const uint64_t* rp1 = reinterpret_cast<const uint64_t*>(cb1);
+                    const uint64_t* rp2 = reinterpret_cast<const uint64_t*>(cb2);
+                    const uint64_t* rp3 = reinterpret_cast<const uint64_t*>(cb3);
+
+                    uint64x2_t v01_0 = vld1q_u64(rp0);
+                    uint64x2_t v23_0 = vld1q_u64(rp0 + 2);
+                    uint64_t v4_0 = rp0[4];
+
+                    uint64x2_t v01_1 = vld1q_u64(rp1);
+                    uint64x2_t v23_1 = vld1q_u64(rp1 + 2);
+                    uint64_t v4_1 = rp1[4];
+
+                    uint64x2_t v01_2 = vld1q_u64(rp2);
+                    uint64x2_t v23_2 = vld1q_u64(rp2 + 2);
+                    uint64_t v4_2 = rp2[4];
+
+                    uint64x2_t v01_3 = vld1q_u64(rp3);
+                    uint64x2_t v23_3 = vld1q_u64(rp3 + 2);
+                    uint64_t v4_3 = rp3[4];
+
+                    field_buffers[0].data[r]   = vgetq_lane_u64(v01_0, 0);
+                    field_buffers[1].data[r]   = vgetq_lane_u64(v01_0, 1);
+                    field_buffers[2].data[r]   = vgetq_lane_u64(v23_0, 0);
+                    field_buffers[3].data[r]   = vgetq_lane_u64(v23_0, 1);
+                    field_buffers[4].data[r]   = v4_0;
+
+                    field_buffers[0].data[r+1] = vgetq_lane_u64(v01_1, 0);
+                    field_buffers[1].data[r+1] = vgetq_lane_u64(v01_1, 1);
+                    field_buffers[2].data[r+1] = vgetq_lane_u64(v23_1, 0);
+                    field_buffers[3].data[r+1] = vgetq_lane_u64(v23_1, 1);
+                    field_buffers[4].data[r+1] = v4_1;
+
+                    field_buffers[0].data[r+2] = vgetq_lane_u64(v01_2, 0);
+                    field_buffers[1].data[r+2] = vgetq_lane_u64(v01_2, 1);
+                    field_buffers[2].data[r+2] = vgetq_lane_u64(v23_2, 0);
+                    field_buffers[3].data[r+2] = vgetq_lane_u64(v23_2, 1);
+                    field_buffers[4].data[r+2] = v4_2;
+
+                    field_buffers[0].data[r+3] = vgetq_lane_u64(v01_3, 0);
+                    field_buffers[1].data[r+3] = vgetq_lane_u64(v01_3, 1);
+                    field_buffers[2].data[r+3] = vgetq_lane_u64(v23_3, 0);
+                    field_buffers[3].data[r+3] = vgetq_lane_u64(v23_3, 1);
+                    field_buffers[4].data[r+3] = v4_3;
+                }
+            } else {
+                for (size_t r = 0; r < rows_in_chunk; ++r) {
+                    const uint64_t* row_ptr = reinterpret_cast<const uint64_t*>(chunk_base + r * row_stride);
+                    uint64x2_t v01 = vld1q_u64(row_ptr);
+                    uint64x2_t v23 = vld1q_u64(row_ptr + 2);
+                    uint64_t v4 = row_ptr[4];
+                    
+                    field_buffers[0].data[r] = vgetq_lane_u64(v01, 0);
+                    field_buffers[1].data[r] = vgetq_lane_u64(v01, 1);
+                    field_buffers[2].data[r] = vgetq_lane_u64(v23, 0);
+                    field_buffers[3].data[r] = vgetq_lane_u64(v23, 1);
+                    field_buffers[4].data[r] = v4;
+                }
             }
             // Zero-pad
             for (size_t r = rows_in_chunk; r < 64; ++r) {
@@ -160,10 +309,54 @@ static void worker_thread(
             total_matches += static_cast<uint64_t>(__builtin_popcountll(kernel_res & rows_mask));
         } else if (!config.delta_weights.empty()) { // HYBRID POPCOUNT
             int64_t total_sum = static_cast<int64_t>(config.base_sum) * rows_in_chunk;
-            for (size_t i = 0; i < config.delta_weights.size(); ++i) {
-                int mask_slot = config.masks_to_popcount[i];
+            const size_t num_weights = config.delta_weights.size();
+            const int64_t* weights = config.delta_weights.data();
+            const int* masks = config.masks_to_popcount.data();
+            
+            size_t i = 0;
+            // Unroll 8x for maximum instruction pipelining and register-level execution
+            for (; i + 8 <= num_weights; i += 8) {
+                int m0 = masks[i];
+                int m1 = masks[i+1];
+                int m2 = masks[i+2];
+                int m3 = masks[i+3];
+                int m4 = masks[i+4];
+                int m5 = masks[i+5];
+                int m6 = masks[i+6];
+                int m7 = masks[i+7];
+
+                uint64_t s0 = scratchpad[m0] & rows_mask;
+                uint64_t s1 = scratchpad[m1] & rows_mask;
+                uint64_t s2 = scratchpad[m2] & rows_mask;
+                uint64_t s3 = scratchpad[m3] & rows_mask;
+                uint64_t s4 = scratchpad[m4] & rows_mask;
+                uint64_t s5 = scratchpad[m5] & rows_mask;
+                uint64_t s6 = scratchpad[m6] & rows_mask;
+                uint64_t s7 = scratchpad[m7] & rows_mask;
+
+                int64_t p0 = __builtin_popcountll(s0);
+                int64_t p1 = __builtin_popcountll(s1);
+                int64_t p2 = __builtin_popcountll(s2);
+                int64_t p3 = __builtin_popcountll(s3);
+                int64_t p4 = __builtin_popcountll(s4);
+                int64_t p5 = __builtin_popcountll(s5);
+                int64_t p6 = __builtin_popcountll(s6);
+                int64_t p7 = __builtin_popcountll(s7);
+
+                total_sum += p0 * weights[i];
+                total_sum += p1 * weights[i+1];
+                total_sum += p2 * weights[i+2];
+                total_sum += p3 * weights[i+3];
+                total_sum += p4 * weights[i+4];
+                total_sum += p5 * weights[i+5];
+                total_sum += p6 * weights[i+6];
+                total_sum += p7 * weights[i+7];
+            }
+            // Tail
+            for (; i < num_weights; ++i) {
+                int mask_slot = masks[i];
                 int64_t pop = __builtin_popcountll(scratchpad[mask_slot] & rows_mask);
-                total_sum += pop * config.delta_weights[i];
+                total_sum += pop * weights[i];
             }
             total_matches += static_cast<uint64_t>(total_sum);
         } else { // BITPLANE
@@ -199,29 +392,25 @@ uint64_t ParallelRunner::run(
 
     // Cache-line padded result slots — no false sharing
     std::vector<PaddedResult> results(num_threads);
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
+    auto& pool = get_global_pool();
 
+    int active_tasks = 0;
     for (int t = 0; t < num_threads; ++t) {
         size_t start = t * rows_per_thread;
         size_t end = (t == num_threads - 1) ? total_rows : start + rows_per_thread;
 
         if (start >= total_rows) break;
 
-        threads.emplace_back(worker_thread,
-                             base, start, end,
-                             std::cref(config),
-                             &results[t]);
+        pool.enqueue({base, start, end, &config, &results[t]});
+        active_tasks++;
     }
 
     // Wait for all workers
-    for (auto& t : threads) {
-        t.join();
-    }
+    pool.wait_all();
 
     // Aggregate results
     uint64_t total = 0;
-    for (int t = 0; t < num_threads; ++t) {
+    for (int t = 0; t < active_tasks; ++t) {
         total += results[t].count;
     }
     return total;
@@ -245,30 +434,26 @@ ParallelRunner::ExecutionStats ParallelRunner::run_with_stats(
 
     // Cache-line padded result slots — no false sharing
     std::vector<PaddedResult> results(num_threads);
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
+    auto& pool = get_global_pool();
 
+    int active_tasks = 0;
     for (int t = 0; t < num_threads; ++t) {
         size_t start = t * rows_per_thread;
         size_t end = (t == num_threads - 1) ? total_rows : start + rows_per_thread;
 
         if (start >= total_rows) break;
 
-        threads.emplace_back(worker_thread,
-                             base, start, end,
-                             std::cref(config),
-                             &results[t]);
+        pool.enqueue({base, start, end, &config, &results[t]});
+        active_tasks++;
     }
 
     // Wait for all workers
-    for (auto& t : threads) {
-        t.join();
-    }
+    pool.wait_all();
 
     // Aggregate results and compute statistics
     uint64_t total_matches = 0;
     uint64_t total_cycles = 0;
-    for (int t = 0; t < num_threads; ++t) {
+    for (int t = 0; t < active_tasks; ++t) {
         total_matches += results[t].count;
         total_cycles += results[t].cycles;
     }

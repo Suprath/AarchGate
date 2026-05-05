@@ -419,6 +419,65 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
         }
     }
 
+    struct ScratchpadCache {
+        asmjit::a64::Assembler& a;
+        Gp scratch_ptr;
+        Gp temp_ptr;
+        
+        std::vector<Gp> cache_regs = {x8, x9, x10, x11, x12, x13, x14, x15};
+        int next_reg = 0;
+        
+        std::unordered_map<int, int> slot_to_reg;
+        std::vector<int> reg_to_slot = {-1, -1, -1, -1, -1, -1, -1, -1};
+
+        ScratchpadCache(asmjit::a64::Assembler& assembler, Gp scratch, Gp temp) 
+            : a(assembler), scratch_ptr(scratch), temp_ptr(temp) {}
+
+        void store_slot(int slot_id, Gp val_reg) {
+            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(slot_id) * 8);
+            a.str(val_reg, Mem(scratch_ptr, temp_ptr));
+
+            int r_idx = -1;
+            auto it = slot_to_reg.find(slot_id);
+            if (it != slot_to_reg.end()) {
+                r_idx = it->second;
+            } else {
+                r_idx = next_reg;
+                next_reg = (next_reg + 1) % 8;
+                int old_slot = reg_to_slot[r_idx];
+                if (old_slot != -1) {
+                    slot_to_reg.erase(old_slot);
+                }
+            }
+            
+            a.mov(cache_regs[r_idx], val_reg);
+            slot_to_reg[slot_id] = r_idx;
+            reg_to_slot[r_idx] = slot_id;
+        }
+
+        void load_slot(int slot_id, Gp dest_reg) {
+            auto it = slot_to_reg.find(slot_id);
+            if (it != slot_to_reg.end()) {
+                a.mov(dest_reg, cache_regs[it->second]);
+            } else {
+                emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(slot_id) * 8);
+                a.ldr(dest_reg, Mem(scratch_ptr, temp_ptr));
+                
+                int r_idx = next_reg;
+                next_reg = (next_reg + 1) % 8;
+                int old_slot = reg_to_slot[r_idx];
+                if (old_slot != -1) {
+                    slot_to_reg.erase(old_slot);
+                }
+                a.mov(cache_regs[r_idx], dest_reg);
+                slot_to_reg[slot_id] = r_idx;
+                reg_to_slot[r_idx] = slot_id;
+            }
+        }
+    };
+
+    ScratchpadCache cache(a, scratch_ptr, temp_ptr);
+
     auto emit_load_op = [&](ir::Node* op, Gp reg) {
         if (op->kind == ir::NodeKind::LOAD) {
             if (op->field_idx < 0) {
@@ -447,10 +506,8 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
             node->kind == ir::NodeKind::GE || node->kind == ir::NodeKind::LE ||
             node->kind == ir::NodeKind::EQ) {
             
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->eq_slot_id) * 8);
-            a.ldr(mask_eq, Mem(scratch_ptr, temp_ptr));
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.ldr(mask_gt, Mem(scratch_ptr, temp_ptr));
+            cache.load_slot(node->eq_slot_id, mask_eq);
+            cache.load_slot(node->slot_id, mask_gt);
 
             a.mov(bit_index, active_bits - 1);
             Label comp_loop = a.new_label();
@@ -475,10 +532,8 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
             a.cmp(bit_index, 0);
             a.b(asmjit::a64::CondCode::kGE, comp_loop);
 
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.str(mask_gt, Mem(scratch_ptr, temp_ptr));
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->eq_slot_id) * 8);
-            a.str(mask_eq, Mem(scratch_ptr, temp_ptr));
+            cache.store_slot(node->slot_id, mask_gt);
+            cache.store_slot(node->eq_slot_id, mask_eq);
         }
     }
 
@@ -486,50 +541,39 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
     for (auto* node : analyzer.all_nodes) {
         if (node->skip_jit) continue;
         if (node->kind == ir::NodeKind::GE || node->kind == ir::NodeKind::LE || node->kind == ir::NodeKind::EQ) {
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.ldr(plane_a, Mem(scratch_ptr, temp_ptr));
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->eq_slot_id) * 8);
-            a.ldr(plane_b, Mem(scratch_ptr, temp_ptr));
+            cache.load_slot(node->slot_id, plane_a);
+            cache.load_slot(node->eq_slot_id, plane_b);
             if (node->kind == ir::NodeKind::EQ) a.mov(result, plane_b);
             else a.orr(result, plane_a, plane_b);
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.str(result, Mem(scratch_ptr, temp_ptr));
+            cache.store_slot(node->slot_id, result);
         } else if (node->kind == ir::NodeKind::AND || node->kind == ir::NodeKind::OR || node->kind == ir::NodeKind::NOT) {
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->left->slot_id) * 8);
-            a.ldr(plane_a, Mem(scratch_ptr, temp_ptr));
+            cache.load_slot(node->left->slot_id, plane_a);
             if (node->right) {
-                emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->right->slot_id) * 8);
-                a.ldr(plane_b, Mem(scratch_ptr, temp_ptr));
+                cache.load_slot(node->right->slot_id, plane_b);
                 if (node->kind == ir::NodeKind::AND) a.and_(result, plane_a, plane_b);
                 else a.orr(result, plane_a, plane_b);
             } else {
                 a.mvn(result, plane_a);
             }
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.str(result, Mem(scratch_ptr, temp_ptr));
+            cache.store_slot(node->slot_id, result);
         } else if (node->kind == ir::NodeKind::SELECT) {
-            // Load condition mask once for all 64 bits
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->cond->slot_id) * 8);
-            a.ldr(mask_gt, Mem(scratch_ptr, temp_ptr));
+            // Load condition mask once for all bits
+            cache.load_slot(node->cond->slot_id, mask_gt);
 
-            a.mov(bit_index, 0);
-            Label select_loop = a.new_label();
-            a.bind(select_loop);
-            
-            emit_load_op(node->left, plane_a);
-            emit_load_op(node->right, plane_b);
+            // Fully loop-unrolled select emission to eliminate branch mispredictions and loop-control overhead
+            for (int bit = 0; bit < active_bits; ++bit) {
+                a.mov(bit_index, bit);
+                
+                emit_load_op(node->left, plane_a);
+                emit_load_op(node->right, plane_b);
 
-            a.and_(scratch1, mask_gt, plane_a);
-            a.bic(temp_ptr, plane_b, mask_gt);
-            a.orr(scratch1, scratch1, temp_ptr);
+                a.and_(scratch1, mask_gt, plane_a);
+                a.bic(temp_ptr, plane_b, mask_gt);
+                a.orr(scratch1, scratch1, temp_ptr);
 
-            emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.add(temp_ptr, temp_ptr, bit_index, asmjit::a64::lsl(3));
-            a.str(scratch1, Mem(scratch_ptr, temp_ptr));
-
-            a.add(bit_index, bit_index, 1);
-            a.cmp(bit_index, active_bits);
-            a.b(asmjit::a64::CondCode::kLT, select_loop);
+                emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8 + bit * 8);
+                a.str(scratch1, Mem(scratch_ptr, temp_ptr));
+            }
         }
     }
 
