@@ -115,12 +115,12 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     if (!kernel) return;
 
     // STEP 3: Collect field descriptors (node->field_idx is now valid)
-    std::vector<const core::FieldDescriptor*> fields(8, nullptr);
+    std::vector<const core::FieldDescriptor*> fields(32, nullptr);
     std::function<void(ir::Node*)> collect_fields = [&](ir::Node* node) {
         if (!node) return;
         if (node->kind == ir::NodeKind::LOAD) {
             int idx = node->field_idx;
-            if (idx >= 0 && idx < 8) {
+            if (idx >= 0 && idx < 32) {
                 const auto* field = registry_.get_field(schema_name, std::string_view(node->field_name));
                 if (field) fields[idx] = field;
             }
@@ -133,7 +133,7 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     collect_fields(expr_root);
 
     size_t max_idx = 0;
-    for (int i = 0; i < 8; ++i) if (fields[i]) max_idx = i + 1;
+    for (int i = 0; i < 32; ++i) if (fields[i]) max_idx = i + 1;
     fields.resize(max_idx);
 
     // STEP 4: Extract SUM/SELECT metadata (node->slot_id is now valid)

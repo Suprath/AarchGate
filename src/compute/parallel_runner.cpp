@@ -145,7 +145,7 @@ static void worker_thread(
 
     // Per-thread resources — zero heap, zero sharing
     BitSlicer slicer;
-    std::array<ColumnBuffer, 8> field_buffers;
+    std::array<ColumnBuffer, 32> field_buffers;
 
     // Use heap-allocated aligned memory for scratchpad to avoid stack alignment issues
     uint64_t* scratchpad = nullptr;
@@ -190,10 +190,10 @@ static void worker_thread(
         __builtin_prefetch(chunk_base + 256 * row_stride, 0, 3);
 
         // Gather + slice all referenced fields
-        alignas(64) const uint64_t* field_planes[8];
+        alignas(64) const uint64_t* field_planes[32];
         std::memset(field_planes, 0, sizeof(field_planes));
 
-        bool use_simd_5 = true; 
+        bool use_simd_5 = (num_fields >= 5 && row_stride >= 40); 
 
         if (use_simd_5) {
             if (rows_in_chunk == 64) {
@@ -273,7 +273,7 @@ static void worker_thread(
                 field_planes[f] = field_buffers[f].data;
             }
             // Tail fields
-            for (size_t f = 5; f < num_fields && f < 8; ++f) {
+            for (size_t f = 5; f < num_fields && f < 32; ++f) {
                 const size_t offset = config.fields[f]->offset;
                 for (size_t r = 0; r < rows_in_chunk; ++r) {
                     std::memcpy(&field_buffers[f].data[r], chunk_base + r * row_stride + offset, 8);
@@ -286,7 +286,7 @@ static void worker_thread(
                 field_planes[f] = field_buffers[f].data;
             }
         } else {
-            for (size_t f = 0; f < num_fields && f < 8; ++f) {
+            for (size_t f = 0; f < num_fields && f < 32; ++f) {
                 const size_t offset = config.fields[f]->offset;
                 for (size_t r = 0; r < rows_in_chunk; ++r) {
                     std::memcpy(&field_buffers[f].data[r], chunk_base + r * row_stride + offset, 8);
