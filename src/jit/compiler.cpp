@@ -326,7 +326,7 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
         ir::Node* load_node = node;
         std::string field_name(load_node->field_name);
         if (field_to_idx.find(field_name) == field_to_idx.end()) {
-            if (field_to_idx.size() >= 8) return nullptr;
+            if (field_to_idx.size() >= 32) return nullptr;
             field_to_idx[field_name] = static_cast<int>(field_to_idx.size());
         }
         load_node->field_idx = field_to_idx[field_name];
@@ -509,28 +509,70 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
             cache.load_slot(node->eq_slot_id, mask_eq);
             cache.load_slot(node->slot_id, mask_gt);
 
-            a.mov(bit_index, active_bits - 1);
-            Label comp_loop = a.new_label();
-            a.bind(comp_loop);
+            Gp hoisted_left = x16;
+            Gp hoisted_right = x17;
 
-            if (node->kind == ir::NodeKind::LT || node->kind == ir::NodeKind::LE) {
-                emit_load_op(node->right, plane_a);
-                emit_load_op(node->left, plane_b);
+            // Hoist left operand
+            if (node->left->kind == ir::NodeKind::LOAD) {
+                a.ldr(hoisted_left, Mem(field_planes_ptr, static_cast<int64_t>(node->left->field_idx) * 8));
+            } else if (node->left->kind == ir::NodeKind::CONST) {
+                emit_mov_imm64(a, hoisted_left, static_cast<uint64_t>(node->left->const_value));
             } else {
-                emit_load_op(node->left, plane_a);
-                emit_load_op(node->right, plane_b);
+                emit_mov_imm64(a, hoisted_left, static_cast<uint64_t>(node->left->slot_id) * 8);
+                a.add(hoisted_left, hoisted_left, scratch_ptr);
             }
 
-            a.bic(result, plane_a, plane_b);
-            a.and_(result, result, mask_eq);
-            a.orr(mask_gt, mask_gt, result);
+            // Hoist right operand
+            if (node->right->kind == ir::NodeKind::LOAD) {
+                a.ldr(hoisted_right, Mem(field_planes_ptr, static_cast<int64_t>(node->right->field_idx) * 8));
+            } else if (node->right->kind == ir::NodeKind::CONST) {
+                emit_mov_imm64(a, hoisted_right, static_cast<uint64_t>(node->right->const_value));
+            } else {
+                emit_mov_imm64(a, hoisted_right, static_cast<uint64_t>(node->right->slot_id) * 8);
+                a.add(hoisted_right, hoisted_right, scratch_ptr);
+            }
 
-            a.eor(result, plane_a, plane_b);
-            a.bic(mask_eq, mask_eq, result);
+            // Statically unroll across bit-planes
+            for (int bit = active_bits - 1; bit >= 0; --bit) {
+                ir::Node* op_a = node->left;
+                ir::Node* op_b = node->right;
+                Gp h_a = hoisted_left;
+                Gp h_b = hoisted_right;
 
-            a.sub(bit_index, bit_index, 1);
-            a.cmp(bit_index, 0);
-            a.b(asmjit::a64::CondCode::kGE, comp_loop);
+                if (node->kind == ir::NodeKind::LT || node->kind == ir::NodeKind::LE) {
+                    std::swap(op_a, op_b);
+                    std::swap(h_a, h_b);
+                }
+
+                // Load operand A into plane_a
+                if (op_a->kind == ir::NodeKind::LOAD || op_a->kind == ir::NodeKind::SELECT || op_a->kind == ir::NodeKind::ADD || op_a->kind == ir::NodeKind::SUB) {
+                    a.ldr(plane_a, Mem(h_a, static_cast<int64_t>(bit) * 8));
+                } else if (op_a->kind == ir::NodeKind::CONST) {
+                    uint64_t bit_val = (static_cast<uint64_t>(op_a->const_value) >> bit) & 1;
+                    if (bit_val) a.mvn(plane_a, xzr);
+                    else a.mov(plane_a, xzr);
+                } else {
+                    a.ldr(plane_a, Mem(h_a, static_cast<int64_t>(bit) * 8));
+                }
+
+                // Load operand B into plane_b
+                if (op_b->kind == ir::NodeKind::LOAD || op_b->kind == ir::NodeKind::SELECT || op_b->kind == ir::NodeKind::ADD || op_b->kind == ir::NodeKind::SUB) {
+                    a.ldr(plane_b, Mem(h_b, static_cast<int64_t>(bit) * 8));
+                } else if (op_b->kind == ir::NodeKind::CONST) {
+                    uint64_t bit_val = (static_cast<uint64_t>(op_b->const_value) >> bit) & 1;
+                    if (bit_val) a.mvn(plane_b, xzr);
+                    else a.mov(plane_b, xzr);
+                } else {
+                    a.ldr(plane_b, Mem(h_b, static_cast<int64_t>(bit) * 8));
+                }
+
+                a.bic(result, plane_a, plane_b);
+                a.and_(result, result, mask_eq);
+                a.orr(mask_gt, mask_gt, result);
+
+                a.eor(result, plane_a, plane_b);
+                a.bic(mask_eq, mask_eq, result);
+            }
 
             cache.store_slot(node->slot_id, mask_gt);
             cache.store_slot(node->eq_slot_id, mask_eq);
@@ -585,27 +627,66 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
             if (node->kind == ir::NodeKind::SUB) a.mov(carry, 1);
             else a.mov(carry, 0);
 
-            a.mov(bit_index, 0);
-            Label node_loop = a.new_label();
-            a.bind(node_loop);
-            
-            emit_load_op(node->left, plane_a);
-            emit_load_op(node->right, plane_b);
+            Gp hoisted_left = x16;
+            Gp hoisted_right = x17;
 
-            if (node->kind == ir::NodeKind::SUB) a.mvn(plane_b, plane_b);
-            a.eor(result, plane_a, plane_b);
-            a.eor(scratch1, result, carry);
-            a.and_(temp_ptr, plane_a, plane_b);
-            a.and_(result, result, carry);
-            a.orr(carry, temp_ptr, result);
+            // Hoist left operand
+            if (node->left->kind == ir::NodeKind::LOAD) {
+                a.ldr(hoisted_left, Mem(field_planes_ptr, static_cast<int64_t>(node->left->field_idx) * 8));
+            } else if (node->left->kind == ir::NodeKind::CONST) {
+                emit_mov_imm64(a, hoisted_left, static_cast<uint64_t>(node->left->const_value));
+            } else {
+                emit_mov_imm64(a, hoisted_left, static_cast<uint64_t>(node->left->slot_id) * 8);
+                a.add(hoisted_left, hoisted_left, scratch_ptr);
+            }
 
+            // Hoist right operand
+            if (node->right->kind == ir::NodeKind::LOAD) {
+                a.ldr(hoisted_right, Mem(field_planes_ptr, static_cast<int64_t>(node->right->field_idx) * 8));
+            } else if (node->right->kind == ir::NodeKind::CONST) {
+                emit_mov_imm64(a, hoisted_right, static_cast<uint64_t>(node->right->const_value));
+            } else {
+                emit_mov_imm64(a, hoisted_right, static_cast<uint64_t>(node->right->slot_id) * 8);
+                a.add(hoisted_right, hoisted_right, scratch_ptr);
+            }
+
+            // Hoist destination slot base address into temp_ptr (x22)
             emit_mov_imm64(a, temp_ptr, static_cast<uint64_t>(node->slot_id) * 8);
-            a.add(temp_ptr, temp_ptr, bit_index, asmjit::a64::lsl(3));
-            a.str(scratch1, Mem(scratch_ptr, temp_ptr));
+            a.add(temp_ptr, temp_ptr, scratch_ptr);
 
-            a.add(bit_index, bit_index, 1);
-            a.cmp(bit_index, active_bits);
-            a.b(asmjit::a64::CondCode::kLT, node_loop);
+            // Statically unroll across bit-planes
+            for (int bit = 0; bit < active_bits; ++bit) {
+                // Load operand A into plane_a
+                if (node->left->kind == ir::NodeKind::LOAD || node->left->kind == ir::NodeKind::SELECT || node->left->kind == ir::NodeKind::ADD || node->left->kind == ir::NodeKind::SUB) {
+                    a.ldr(plane_a, Mem(hoisted_left, static_cast<int64_t>(bit) * 8));
+                } else if (node->left->kind == ir::NodeKind::CONST) {
+                    uint64_t bit_val = (static_cast<uint64_t>(node->left->const_value) >> bit) & 1;
+                    if (bit_val) a.mvn(plane_a, xzr);
+                    else a.mov(plane_a, xzr);
+                } else {
+                    a.ldr(plane_a, Mem(hoisted_left, static_cast<int64_t>(bit) * 8));
+                }
+
+                // Load operand B into plane_b
+                if (node->right->kind == ir::NodeKind::LOAD || node->right->kind == ir::NodeKind::SELECT || node->right->kind == ir::NodeKind::ADD || node->right->kind == ir::NodeKind::SUB) {
+                    a.ldr(plane_b, Mem(hoisted_right, static_cast<int64_t>(bit) * 8));
+                } else if (node->right->kind == ir::NodeKind::CONST) {
+                    uint64_t bit_val = (static_cast<uint64_t>(node->right->const_value) >> bit) & 1;
+                    if (bit_val) a.mvn(plane_b, xzr);
+                    else a.mov(plane_b, xzr);
+                } else {
+                    a.ldr(plane_b, Mem(hoisted_right, static_cast<int64_t>(bit) * 8));
+                }
+
+                if (node->kind == ir::NodeKind::SUB) a.mvn(plane_b, plane_b);
+                a.eor(result, plane_a, plane_b);
+                a.eor(scratch1, result, carry);
+                a.and_(plane_a, plane_a, plane_b); // Reuse plane_a as scratch to preserve temp_ptr
+                a.and_(result, result, carry);
+                a.orr(carry, plane_a, result);
+
+                a.str(scratch1, Mem(temp_ptr, static_cast<int64_t>(bit) * 8));
+            }
         }
     }
 

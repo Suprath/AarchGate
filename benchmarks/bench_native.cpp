@@ -33,7 +33,7 @@ int main() {
     using namespace apex::builder;
     std::vector<ir::Node*> trees;
     for (int i = 0; i < num_trees; ++i) {
-        auto* t = Select(GT(Load("f" + std::to_string(i % num_features)), Const(50)), Const(100), Const(1));
+        auto* t = Select(GT(Load(("f" + std::to_string(i % num_features)).c_str()), Const(50)), Const(100), Const(1));
         trees.push_back(t);
     }
     engine.set_expression("rf_schema", Sum(trees));

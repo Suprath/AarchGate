@@ -97,3 +97,15 @@ target_include_directories(test_ml_inference PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(test_ml_inference PRIVATE aarchgate)
 target_compile_options(test_ml_inference PRIVATE ${APEX_COMPILE_FLAGS})
 add_test(NAME MLInferenceTests COMMAND test_ml_inference)
+
+# Zero-Copy SHM Simulation test
+add_executable(test_zero_copy_shm test_zero_copy_shm.cpp)
+target_include_directories(test_zero_copy_shm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(test_zero_copy_shm PRIVATE aarchgate)
+target_compile_options(test_zero_copy_shm PRIVATE ${APEX_COMPILE_FLAGS})
+if(asmjit_FOUND)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../external/asmjit")
+        target_include_directories(test_zero_copy_shm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../external/asmjit")
+    endif()
+endif()
+add_test(NAME ZeroCopySHMTests COMMAND test_zero_copy_shm)

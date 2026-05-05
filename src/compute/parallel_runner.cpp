@@ -276,7 +276,7 @@ static void worker_thread(
             for (size_t f = 5; f < num_fields && f < 32; ++f) {
                 const size_t offset = config.fields[f]->offset;
                 for (size_t r = 0; r < rows_in_chunk; ++r) {
-                    std::memcpy(&field_buffers[f].data[r], chunk_base + r * row_stride + offset, 8);
+                    field_buffers[f].data[r] = *reinterpret_cast<const uint64_t*>(chunk_base + r * row_stride + offset);
                 }
                 for (size_t r = rows_in_chunk; r < 64; ++r) field_buffers[f].data[r] = 0;
                 
@@ -289,7 +289,7 @@ static void worker_thread(
             for (size_t f = 0; f < num_fields && f < 32; ++f) {
                 const size_t offset = config.fields[f]->offset;
                 for (size_t r = 0; r < rows_in_chunk; ++r) {
-                    std::memcpy(&field_buffers[f].data[r], chunk_base + r * row_stride + offset, 8);
+                    field_buffers[f].data[r] = *reinterpret_cast<const uint64_t*>(chunk_base + r * row_stride + offset);
                 }
                 for (size_t r = rows_in_chunk; r < 64; ++r) field_buffers[f].data[r] = 0;
 
