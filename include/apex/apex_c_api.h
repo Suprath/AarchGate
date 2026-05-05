@@ -53,6 +53,14 @@ __attribute__((visibility("default"))) uint64_t apex_execute(
     const void* data_ptr, 
     size_t count);
 
+// Execute the registered logic across data in parallel using multiple threads
+// Returns the total number of matches, or (uint64_t)-1 on failure
+__attribute__((visibility("default"))) uint64_t apex_execute_parallel(
+    apex_engine_h handle, 
+    const void* data_ptr, 
+    size_t count,
+    int num_threads);
+
 // Helper for multi-language verification tests
 // Returns ir_root_ptr for: (Field0 + Field1) > Field2
 __attribute__((visibility("default"))) void* apex_create_universal_test_logic(void);
@@ -70,6 +78,8 @@ __attribute__((visibility("default"))) void* apex_builder_lt(void* a, void* b);
 __attribute__((visibility("default"))) void* apex_builder_and(void* a, void* b);
 __attribute__((visibility("default"))) void* apex_builder_select(void* cond, void* a, void* b);
 __attribute__((visibility("default"))) void* apex_builder_sum(void** operands, size_t count);
+__attribute__((visibility("default"))) void* apex_builder_not(void* a);
+__attribute__((visibility("default"))) void apex_builder_set_weight(void* node, int64_t weight);
 
 #ifdef __cplusplus
 }

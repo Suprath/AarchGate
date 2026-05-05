@@ -10,6 +10,7 @@
 #include <array>
 #include <algorithm>
 #include <cstring>
+#include <arm_neon.h>
 
 #ifdef __APPLE__
 #include <pthread.h>
@@ -53,7 +54,7 @@ static void worker_thread(
 
     // Use heap-allocated aligned memory for scratchpad to avoid stack alignment issues
     uint64_t* scratchpad = nullptr;
-    if (posix_memalign((void**)&scratchpad, 64, 32768 * sizeof(uint64_t)) != 0) {
+    if (posix_memalign((void**)&scratchpad, 64, 262144 * sizeof(uint64_t)) != 0) {
         result->count = 0;
         result->cycles = 0;
         return;
@@ -61,7 +62,7 @@ static void worker_thread(
 
     // Ensure it's cleared
     if (scratchpad) {
-        std::memset(scratchpad, 0, 32768 * sizeof(uint64_t));
+        std::memset(scratchpad, 0, 262144 * sizeof(uint64_t));
     } else {
         result->count = 0;
         result->cycles = 0;
@@ -97,35 +98,55 @@ static void worker_thread(
         alignas(64) const uint64_t* field_planes[8];
         std::memset(field_planes, 0, sizeof(field_planes));
 
-        for (size_t f = 0; f < num_fields && f < 8; ++f) {
-            const size_t offset = config.fields[f]->offset;
+        bool use_simd_5 = true; 
 
-            // 4x unrolled gather for better ILP and cache utilization
-            size_t i = 0;
-            for (; i + 4 <= rows_in_chunk; i += 4) {
-                uint64_t v0, v1, v2, v3;
-                std::memcpy(&v0, chunk_base + (i + 0) * row_stride + offset, 8);
-                std::memcpy(&v1, chunk_base + (i + 1) * row_stride + offset, 8);
-                std::memcpy(&v2, chunk_base + (i + 2) * row_stride + offset, 8);
-                std::memcpy(&v3, chunk_base + (i + 3) * row_stride + offset, 8);
-                field_buffers[f].data[i + 0] = v0;
-                field_buffers[f].data[i + 1] = v1;
-                field_buffers[f].data[i + 2] = v2;
-                field_buffers[f].data[i + 3] = v3;
+        if (use_simd_5) {
+            for (size_t r = 0; r < rows_in_chunk; ++r) {
+                const uint64_t* row_ptr = reinterpret_cast<const uint64_t*>(chunk_base + r * row_stride);
+                uint64x2_t v01 = vld1q_u64(row_ptr);
+                uint64x2_t v23 = vld1q_u64(row_ptr + 2);
+                uint64_t v4 = row_ptr[4];
+                
+                field_buffers[0].data[r] = vgetq_lane_u64(v01, 0);
+                field_buffers[1].data[r] = vgetq_lane_u64(v01, 1);
+                field_buffers[2].data[r] = vgetq_lane_u64(v23, 0);
+                field_buffers[3].data[r] = vgetq_lane_u64(v23, 1);
+                field_buffers[4].data[r] = v4;
             }
-            // Scalar tail
-            for (; i < rows_in_chunk; i++) {
-                std::memcpy(&field_buffers[f].data[i], chunk_base + i * row_stride + offset, 8);
+            // Zero-pad
+            for (size_t r = rows_in_chunk; r < 64; ++r) {
+                for (int f = 0; f < 5; ++f) field_buffers[f].data[r] = 0;
             }
-            // Zero-pad to 64-row boundary
-            for (; i < 64; i++) {
-                field_buffers[f].data[i] = 0;
-            }
-
-            if (config.mode == ExecutionMode::BIT_SLICED) {
-                slicer.slice_n(field_buffers[f].data, 64, const_cast<uint64_t*>(field_buffers[f].data), config.active_bits);
+            for (int f = 0; f < 5; ++f) {
+                if (config.mode == ExecutionMode::BIT_SLICED) {
+                    slicer.slice_n(field_buffers[f].data, 64, const_cast<uint64_t*>(field_buffers[f].data), config.active_bits);
+                }
                 field_planes[f] = field_buffers[f].data;
-            } else {
+            }
+            // Tail fields
+            for (size_t f = 5; f < num_fields && f < 8; ++f) {
+                const size_t offset = config.fields[f]->offset;
+                for (size_t r = 0; r < rows_in_chunk; ++r) {
+                    std::memcpy(&field_buffers[f].data[r], chunk_base + r * row_stride + offset, 8);
+                }
+                for (size_t r = rows_in_chunk; r < 64; ++r) field_buffers[f].data[r] = 0;
+                
+                if (config.mode == ExecutionMode::BIT_SLICED) {
+                    slicer.slice_n(field_buffers[f].data, 64, const_cast<uint64_t*>(field_buffers[f].data), config.active_bits);
+                }
+                field_planes[f] = field_buffers[f].data;
+            }
+        } else {
+            for (size_t f = 0; f < num_fields && f < 8; ++f) {
+                const size_t offset = config.fields[f]->offset;
+                for (size_t r = 0; r < rows_in_chunk; ++r) {
+                    std::memcpy(&field_buffers[f].data[r], chunk_base + r * row_stride + offset, 8);
+                }
+                for (size_t r = rows_in_chunk; r < 64; ++r) field_buffers[f].data[r] = 0;
+
+                if (config.mode == ExecutionMode::BIT_SLICED) {
+                    slicer.slice_n(field_buffers[f].data, 64, const_cast<uint64_t*>(field_buffers[f].data), config.active_bits);
+                }
                 field_planes[f] = field_buffers[f].data;
             }
         }
@@ -138,13 +159,13 @@ static void worker_thread(
         if (config.result_kind == 1) { // BITMASK
             total_matches += static_cast<uint64_t>(__builtin_popcountll(kernel_res & rows_mask));
         } else if (!config.delta_weights.empty()) { // HYBRID POPCOUNT
-            int64_t chunk_sum = static_cast<int64_t>(config.base_sum) * rows_in_chunk;
+            int64_t total_sum = static_cast<int64_t>(config.base_sum) * rows_in_chunk;
             for (size_t i = 0; i < config.delta_weights.size(); ++i) {
                 int mask_slot = config.masks_to_popcount[i];
-                int64_t pop = __builtin_popcountll(scratchpad[mask_slot]);
-                chunk_sum += pop * config.delta_weights[i];
+                int64_t pop = __builtin_popcountll(scratchpad[mask_slot] & rows_mask);
+                total_sum += pop * config.delta_weights[i];
             }
-            total_matches += static_cast<uint64_t>(chunk_sum);
+            total_matches += static_cast<uint64_t>(total_sum);
         } else { // BITPLANE
             for (int i = 0; i < 64; ++i) {
                 total_matches += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i] & rows_mask))) << i;

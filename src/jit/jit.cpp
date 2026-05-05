@@ -56,6 +56,7 @@ ir::Node* Add(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Sub(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::SUB;
@@ -88,6 +89,7 @@ ir::Node* LT(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* GE(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::GE;
@@ -98,6 +100,7 @@ ir::Node* GE(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* LE(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LE;
@@ -108,6 +111,7 @@ ir::Node* LE(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* EQ(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::EQ;
@@ -118,6 +122,7 @@ ir::Node* EQ(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* And(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::AND;
@@ -128,6 +133,7 @@ ir::Node* And(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Or(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::OR;
@@ -138,6 +144,7 @@ ir::Node* Or(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Not(ir::Node* a) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::NOT;
@@ -159,6 +166,7 @@ ir::Node* Select(ir::Node* cond, ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Mul(ir::Node* a, ir::Node* b) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::MUL;
@@ -169,6 +177,7 @@ ir::Node* Mul(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Popcnt(ir::Node* a) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::POPCNT;
@@ -178,6 +187,7 @@ ir::Node* Popcnt(ir::Node* a) noexcept {
 }
 
 ir::Node* LSL(ir::Node* a, int shift) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LSL;
@@ -188,6 +198,7 @@ ir::Node* LSL(ir::Node* a, int shift) noexcept {
 }
 
 ir::Node* LSR(ir::Node* a, int shift) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LSR;
@@ -198,6 +209,7 @@ ir::Node* LSR(ir::Node* a, int shift) noexcept {
 }
 
 ir::Node* Sum(const std::vector<ir::Node*>& operands) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::SUM;
@@ -207,6 +219,7 @@ ir::Node* Sum(const std::vector<ir::Node*>& operands) noexcept {
 }
 
 ir::Node* InferenceCount(ir::Node* cond) noexcept {
+    ensure_pool();
     ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::INFERENCE_COUNT;

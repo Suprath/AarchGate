@@ -1,13 +1,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <cstdio>
+#include <algorithm>
 #include <string_view>
 #include <cstdint>
 #include "apex/common.hpp"
-#include <vector>
 #include <new>
 #include <cstdlib>
-#include <cstdio>
 
 namespace apex {
 namespace ir {
@@ -46,6 +47,7 @@ struct Node {
     // Node content (union-like, interpreted per kind)
     char field_name[64] = {};     // For LOAD: field name (fixed size, no heap)
     int64_t const_value = 0;      // For CONST: the constant value
+    int64_t weight = 0;           // For nodes used in SUM: leaf weight
     int shift_amount = 0;         // For LSL/LSR: number of bits to shift
 
     // Tree structure
@@ -69,7 +71,7 @@ namespace builder {
 
 // Global node pool for tree construction (setup-time only, no heap during execute)
 struct NodePool {
-    static constexpr int MAX_NODES = 1048576; // 1M nodes
+    static constexpr int MAX_NODES = 2097152; // 2M nodes
     ir::Node* storage;
     int next_idx = 0;
 

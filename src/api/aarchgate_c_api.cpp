@@ -68,8 +68,7 @@ int apex_set_logic(apex_engine_h handle, const char* schema_name, void* ir_root_
     try {
         ApexEngine* engine = static_cast<ApexEngine*>(handle);
         ir::Node* root = static_cast<ir::Node*>(ir_root_ptr);
-        ExecutionMode exec_mode = (mode == APEX_EXEC_MODE_SCALAR) ? ExecutionMode::SCALAR : ExecutionMode::BIT_SLICED;
-        
+        ExecutionMode exec_mode = (mode == 0) ? ExecutionMode::BIT_SLICED : ExecutionMode::SCALAR;
         engine->set_expression(schema_name, root, exec_mode);
         return 0;
     } catch (...) {
@@ -82,7 +81,17 @@ uint64_t apex_execute(apex_engine_h handle, const void* data_ptr, size_t count) 
 
     try {
         ApexEngine* engine = static_cast<ApexEngine*>(handle);
-        return engine->execute(data_ptr, count); // Switch to single-threaded for stability verification
+        return engine->execute(data_ptr, count); 
+    } catch (...) {
+        return (uint64_t)-1;
+    }
+}
+
+uint64_t apex_execute_parallel(apex_engine_h handle, const void* data_ptr, size_t count, int num_threads) {
+    if (!handle || !data_ptr) return (uint64_t)-1;
+    try {
+        ApexEngine* engine = static_cast<ApexEngine*>(handle);
+        return engine->execute_parallel(data_ptr, count, num_threads);
     } catch (...) {
         return (uint64_t)-1;
     }
@@ -143,6 +152,14 @@ void* apex_builder_sum(void** operands, size_t count) {
         nodes.push_back(static_cast<ir::Node*>(operands[i]));
     }
     return apex::builder::Sum(nodes);
+}
+
+void* apex_builder_not(void* a) {
+    return apex::builder::Not(static_cast<ir::Node*>(a));
+}
+
+void apex_builder_set_weight(void* node, int64_t weight) {
+    if (node) static_cast<ir::Node*>(node)->weight = weight;
 }
 
 } // extern "C"

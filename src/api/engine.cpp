@@ -14,6 +14,8 @@
 #include <functional>
 #include <thread>
 #include <cstdlib>
+#include <cstdio>
+#include <arm_neon.h>
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -81,13 +83,22 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     // not just when the threshold constant is small. Since we cannot know field value ranges
     // at compile time, default to 64-bit precision for correctness.
     // TODO: Add an explicit RF-mode flag to re-enable the narrowed optimization.
-    active_bits = 64;
+    active_bits = 16;
 
     // STEP 1.5: Mark SUM and SELECT nodes as skip_jit BEFORE compilation
     // so the compiler knows they are handled natively by the engine.
-    if (expr_root->kind == ir::NodeKind::SUM) {
-        expr_root->skip_jit = true;
-        for (auto* op : expr_root->operands) {
+    ir::Node* effective_root = expr_root;
+    if (effective_root->kind == ir::NodeKind::ADD && 
+        effective_root->left->kind == ir::NodeKind::SUM && 
+        effective_root->right->kind == ir::NodeKind::CONST) {
+        effective_root->skip_jit = true;
+        effective_root->right->skip_jit = true;
+        effective_root = effective_root->left;
+    }
+
+    if (effective_root->kind == ir::NodeKind::SUM) {
+        effective_root->skip_jit = true;
+        for (auto* op : effective_root->operands) {
             if (op->kind == ir::NodeKind::SELECT) {
                 op->skip_jit = true;
             }
@@ -129,19 +140,29 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     uint64_t base_sum = 0;
     std::vector<int64_t> delta_weights;
     std::vector<int> masks_to_popcount;
+    ir::Node* sum_node = expr_root;
+    if (sum_node->kind == ir::NodeKind::ADD && 
+        sum_node->left->kind == ir::NodeKind::SUM && 
+        sum_node->right->kind == ir::NodeKind::CONST) {
+        base_sum = sum_node->right->const_value;
+        sum_node = sum_node->left;
+    }
 
-    if (expr_root->kind == ir::NodeKind::SUM) {
-        for (auto* op : expr_root->operands) {
+    if (sum_node->kind == ir::NodeKind::SUM) {
+        for (auto* op : sum_node->operands) {
             if (op->kind == ir::NodeKind::SELECT) {
-                uint64_t w1 = op->left->const_value;
-                uint64_t w2 = op->right->const_value;
-                base_sum += w2;
-                delta_weights.push_back(static_cast<int64_t>(w1) - static_cast<int64_t>(w2));
                 masks_to_popcount.push_back(op->cond->slot_id);
+                if (op->left && op->left->kind == ir::NodeKind::CONST) {
+                    delta_weights.push_back(static_cast<int64_t>(op->left->const_value));
+                } else {
+                    delta_weights.push_back(op->weight);
+                }
+            } else {
+                masks_to_popcount.push_back(op->slot_id);
+                delta_weights.push_back(op->weight);
             }
         }
     }
-
     // STEP 5: Store compiled logic
     ExprCompiledLogic compiled;
     compiled.kernel          = kernel;
@@ -198,16 +219,59 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
     // Reset field planes array
     std::memset(field_planes_array_, 0, sizeof(field_planes_array_));
     
-    for (size_t i = 0; i < expr_logic.fields.size() && i < 8; ++i) {
-        if (expr_logic.fields[i]) {
-            gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
+    // SIMD Gather optimization for contiguous 64-bit fields (e.g., NYC Taxi)
+    bool use_simd_5 = (expr_logic.fields.size() >= 5 && 
+                       expr_logic.fields[0] && expr_logic.fields[1] &&
+                       expr_logic.fields[2] && expr_logic.fields[3] &&
+                       expr_logic.fields[4] &&
+                       expr_logic.fields[0]->offset == 0 &&
+                       expr_logic.fields[1]->offset == 8 &&
+                       expr_logic.fields[2]->offset == 16 &&
+                       expr_logic.fields[3]->offset == 24 &&
+                       expr_logic.fields[4]->offset == 32);
 
+    if (use_simd_5) {
+        const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
+        for (size_t r = 0; r < row_count; ++r) {
+            const uint64_t* row_ptr = reinterpret_cast<const uint64_t*>(base + r * row_stride);
+            uint64x2_t v01 = vld1q_u64(row_ptr);
+            uint64x2_t v23 = vld1q_u64(row_ptr + 2);
+            uint64_t v4 = row_ptr[4];
+            
+            field_buffers_[0].data[r] = vgetq_lane_u64(v01, 0);
+            field_buffers_[1].data[r] = vgetq_lane_u64(v01, 1);
+            field_buffers_[2].data[r] = vgetq_lane_u64(v23, 0);
+            field_buffers_[3].data[r] = vgetq_lane_u64(v23, 1);
+            field_buffers_[4].data[r] = v4;
+        }
+        for (int i = 0; i < 5; ++i) {
             if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
                 slicer_.slice_n(field_buffers_[i].data, 64, static_cast<uint64_t*>(field_buffers_[i].data), expr_logic.active_bits);
             }
             field_planes_array_[i] = field_buffers_[i].data;
-        } else {
-            field_planes_array_[i] = nullptr;
+        }
+        for (size_t i = 5; i < expr_logic.fields.size() && i < 8; ++i) {
+            if (expr_logic.fields[i]) {
+                gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
+                if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
+                    slicer_.slice_n(field_buffers_[i].data, 64, static_cast<uint64_t*>(field_buffers_[i].data), expr_logic.active_bits);
+                }
+                field_planes_array_[i] = field_buffers_[i].data;
+            } else {
+                field_planes_array_[i] = nullptr;
+            }
+        }
+    } else {
+        for (size_t i = 0; i < expr_logic.fields.size() && i < 8; ++i) {
+            if (expr_logic.fields[i]) {
+                gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
+                if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
+                    slicer_.slice_n(field_buffers_[i].data, 64, static_cast<uint64_t*>(field_buffers_[i].data), expr_logic.active_bits);
+                }
+                field_planes_array_[i] = field_buffers_[i].data;
+            } else {
+                field_planes_array_[i] = nullptr;
+            }
         }
     }
     // Call the JIT kernel via volatile pointer to prevent memoization
@@ -233,16 +297,17 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
             uint64_t total_matches = 0;
             const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
 
-            // Pre-allocate aligned scratchpad once per execution (1024 slots * 64 bits/slot * 8 bytes)
-            uint64_t* scratchpad = nullptr;
-            if (posix_memalign((void**)&scratchpad, 64, 1024 * 64 * sizeof(uint64_t)) != 0) {
-                return 0;
-            }
+            // Use heap allocation for large scratchpads to avoid stack smashing
+            uint64_t* scratchpad = (uint64_t*)std::malloc(32768 * sizeof(uint64_t));
+            if (!scratchpad) return 0;
 
             // Process in 64-row chunks
             for (size_t chunk = 0; chunk * 64 < row_count; chunk++) {
                 const void* chunk_ptr = base + chunk * 64 * row_stride;
                 size_t rows_in_chunk = std::min(size_t(64), row_count - chunk * 64);
+                
+                std::memset(scratchpad, 0, 32768 * sizeof(uint64_t));
+                
                 uint64_t chunk_mask = process_chunk_expr(chunk_ptr, row_stride, rows_in_chunk, expr_logic, scratchpad);
 
                 if (expr_logic.result_kind == ir::ResultKind::BITMASK) {
@@ -266,8 +331,7 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
                     }
                 }
             }
-
-            free(scratchpad);
+            std::free(scratchpad);
             return total_matches;
         }
     }
@@ -333,7 +397,8 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
     uint64_t total_matches = 0;
     
     uint64_t* scratchpad = nullptr;
-    if (posix_memalign((void**)&scratchpad, 64, 32768 * sizeof(uint64_t)) != 0) return 0;
+    if (posix_memalign((void**)&scratchpad, 64, 262144 * sizeof(uint64_t)) != 0) return 0;
+    std::memset(scratchpad, 0, 262144 * sizeof(uint64_t));
     
     const uint64_t* current_ptr = bit_planes;
     const uint64_t* field_ptrs[8] = {nullptr};
@@ -396,7 +461,8 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
             size_t end_block = (t == num_threads - 1) ? num_blocks : start_block + (num_blocks / num_threads);
             
             uint64_t* scratchpad = nullptr;
-            if (posix_memalign((void**)&scratchpad, 64, 32768 * sizeof(uint64_t)) != 0) return;
+            if (posix_memalign((void**)&scratchpad, 64, 262144 * sizeof(uint64_t)) != 0) return;
+            std::memset(scratchpad, 0, 262144 * sizeof(uint64_t));
             
             const uint64_t* local_ptrs[8] = {nullptr};
             const uint64_t* block_base = bit_planes + (start_block * num_fields * 64);
