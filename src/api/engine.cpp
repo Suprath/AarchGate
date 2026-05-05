@@ -83,7 +83,7 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     // not just when the threshold constant is small. Since we cannot know field value ranges
     // at compile time, default to 64-bit precision for correctness.
     // TODO: Add an explicit RF-mode flag to re-enable the narrowed optimization.
-    active_bits = 16;
+    active_bits = 64;
 
     // STEP 1.5: Mark SUM and SELECT nodes as skip_jit BEFORE compilation
     // so the compiler knows they are handled natively by the engine.
@@ -250,7 +250,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
             }
             field_planes_array_[i] = field_buffers_[i].data;
         }
-        for (size_t i = 5; i < expr_logic.fields.size() && i < 8; ++i) {
+        for (size_t i = 5; i < expr_logic.fields.size() && i < 32; ++i) {
             if (expr_logic.fields[i]) {
                 gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
                 if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
@@ -262,7 +262,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
             }
         }
     } else {
-        for (size_t i = 0; i < expr_logic.fields.size() && i < 8; ++i) {
+        for (size_t i = 0; i < expr_logic.fields.size() && i < 32; ++i) {
             if (expr_logic.fields[i]) {
                 gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
                 if (expr_logic.mode == ExecutionMode::BIT_SLICED) {

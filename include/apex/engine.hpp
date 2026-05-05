@@ -92,8 +92,8 @@ private:
     std::unordered_map<std::string, ExprCompiledLogic> expr_logic_;
 
     // Performance buffers (pre-allocated to avoid heap churn)
-    mutable std::array<compute::ColumnBuffer, 8> field_buffers_;
-    mutable const uint64_t* field_planes_array_[8];
+    mutable std::array<compute::ColumnBuffer, 32> field_buffers_;
+    mutable const uint64_t* field_planes_array_[32];
 
     int num_threads_;
 
