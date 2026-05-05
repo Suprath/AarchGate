@@ -18,7 +18,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Extreme optimization flags for production
-set(APEX_COMPILE_FLAGS_STR "-O3 -march=native -ffast-math -fno-finite-math-only -Wall -Wextra")
+set(APEX_COMPILE_FLAGS_STR "-O3 -ffast-math -fno-finite-math-only -Wall -Wextra")
 
 # Release flags (production)
 set(CMAKE_CXX_FLAGS_RELEASE "${APEX_COMPILE_FLAGS_STR}")

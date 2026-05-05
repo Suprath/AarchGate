@@ -5,6 +5,9 @@
 #include <cstdint>
 #include "apex/common.hpp"
 #include <vector>
+#include <new>
+#include <cstdlib>
+#include <cstdio>
 
 namespace apex {
 namespace ir {
@@ -66,22 +69,42 @@ namespace builder {
 
 // Global node pool for tree construction (setup-time only, no heap during execute)
 struct NodePool {
-    static constexpr int MAX_NODES = 8192;
-    ir::Node storage[MAX_NODES];
+    static constexpr int MAX_NODES = 1048576; // 1M nodes
+    ir::Node* storage;
     int next_idx = 0;
 
-    ir::Node* alloc() noexcept {
-        if (next_idx >= MAX_NODES) return nullptr;
-        return &storage[next_idx++];
+    NodePool() noexcept : next_idx(0) {
+        storage = (ir::Node*)std::malloc(MAX_NODES * sizeof(ir::Node));
+        if (storage) {
+        } else {
+            fprintf(stderr, "[AARCHGATE DEBUG] ERROR: NodePool Malloc FAILED!\n"); fflush(stderr);
+        }
     }
 
-    void reset() noexcept { next_idx = 0; }
+    ~NodePool() noexcept {
+        reset();
+        std::free(storage);
+    }
+
+    ir::Node* alloc() noexcept {
+        if (!storage || next_idx >= MAX_NODES) return nullptr;
+        ir::Node* n = &storage[next_idx++];
+        return new (n) ir::Node(); // Placement new to initialize std::vector
+    }
+
+    void reset() noexcept {
+        if (!storage) return;
+        for (int i = 0; i < next_idx; ++i) {
+            storage[i].~Node(); // Call destructor to free std::vector memory
+        }
+        next_idx = 0; 
+    }
 };
 
-extern thread_local NodePool g_pool;
+extern NodePool* g_pool;
 
 // Builder functions
-APEX_API ir::Node* Load(std::string_view field_name) noexcept;
+APEX_API ir::Node* Load(const char* field_name) noexcept;
 APEX_API ir::Node* Const(int64_t value) noexcept;
 APEX_API ir::Node* Add(ir::Node* a, ir::Node* b) noexcept;
 APEX_API ir::Node* Sub(ir::Node* a, ir::Node* b) noexcept;

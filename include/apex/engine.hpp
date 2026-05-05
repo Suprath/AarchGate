@@ -32,9 +32,9 @@ public:
 
     void set_expression(std::string_view schema_name, 
                        ir::Node* expr_root, 
-                       ExecutionMode mode = ExecutionMode::BIT_SLICED) noexcept;
+                       ExecutionMode mode = ExecutionMode::BIT_SLICED);
 
-    uint64_t execute(const void* data_ptr, size_t row_count) noexcept;
+    uint64_t execute(const void* data_ptr, size_t row_count);
     uint64_t execute_parallel(const void* data_ptr, size_t row_count, int num_threads = -1) noexcept;
 
     // Native Bit-Sliced Path: Zero-Overhead Silicon Limit

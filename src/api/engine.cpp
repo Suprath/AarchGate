@@ -59,7 +59,7 @@ void ApexEngine::set_logic(std::string_view schema_name,
     compiled_logic_[std::string(schema_name)] = {field, kernel};
 }
 
-void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_root, ExecutionMode mode) noexcept {
+void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_root, ExecutionMode mode) {
     if (!expr_root) return;
 
     // STEP 1: Analyze active bits (only reads CONST values — safe before compilation)
@@ -201,6 +201,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
     for (size_t i = 0; i < expr_logic.fields.size() && i < 8; ++i) {
         if (expr_logic.fields[i]) {
             gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
+
             if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
                 slicer_.slice_n(field_buffers_[i].data, 64, static_cast<uint64_t*>(field_buffers_[i].data), expr_logic.active_bits);
             }
@@ -217,7 +218,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
     return 0;
 }
 
-uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
+uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
     // Check for expression-based logic first
     if (!expr_logic_.empty()) {
         auto meta_it = expr_logic_.begin();
@@ -249,10 +250,11 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) noexcept {
                     total_matches += static_cast<uint64_t>(__builtin_popcountll(chunk_mask & rows_mask));
                 } else if (!expr_logic.delta_weights.empty()) {
                     // HYBRID POPCOUNT AGGREGATOR
+                    uint64_t rows_mask = (rows_in_chunk == 64) ? ~0ULL : (1ULL << rows_in_chunk) - 1;
                     int64_t chunk_sum = static_cast<int64_t>(expr_logic.base_sum) * rows_in_chunk;
                     for (size_t i = 0; i < expr_logic.delta_weights.size(); ++i) {
                         int mask_slot = expr_logic.masks_to_popcount[i];
-                        int64_t pop = __builtin_popcountll(scratchpad[mask_slot]);
+                        int64_t pop = __builtin_popcountll(scratchpad[mask_slot] & rows_mask);
                         chunk_sum += pop * expr_logic.delta_weights[i];
                     }
                     total_matches += static_cast<uint64_t>(chunk_sum);
@@ -420,6 +422,11 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
                         chunk_sum += __builtin_popcountll(scratchpad[logic.masks_to_popcount[i]]) * logic.delta_weights[i];
                     }
                     results[t] += static_cast<uint64_t>(chunk_sum);
+                } else {
+                    logic.kernel(local_ptrs, scratchpad);
+                    for (int i = 0; i < 64; ++i) {
+                        results[t] += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i]))) << i;
+                    }
                 }
                 block_base += (num_fields * 64);
             }

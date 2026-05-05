@@ -8,23 +8,35 @@
 #include "apex/jit/ir.hpp"
 #include <cstring>
 
-// Global thread-local node pool
-thread_local apex::builder::NodePool apex::builder::g_pool;
+// Global node pool pointer — lazily initialized on first builder call
+apex::builder::NodePool* apex::builder::g_pool = nullptr;
+
+#include <unordered_map>
+#include <string>
 
 namespace apex {
 namespace builder {
 
-ir::Node* Load(std::string_view field_name) noexcept {
-    ir::Node* n = g_pool.alloc();
+// Ensure the global pool is alive before any builder call
+static void ensure_pool() noexcept {
+    if (!g_pool) {
+        g_pool = new NodePool();
+    }
+}
+
+ir::Node* Load(const char* field_name) noexcept {
+    ensure_pool();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LOAD;
     n->result_kind = ir::ResultKind::BITPLANE;
-    std::strncpy(n->field_name, field_name.data(), sizeof(n->field_name) - 1);
+    std::strncpy(n->field_name, field_name, sizeof(n->field_name) - 1);
     return n;
 }
 
 ir::Node* Const(int64_t value) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ensure_pool();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::CONST;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -33,7 +45,8 @@ ir::Node* Const(int64_t value) noexcept {
 }
 
 ir::Node* Add(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ensure_pool();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::ADD;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -43,7 +56,7 @@ ir::Node* Add(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Sub(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::SUB;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -53,7 +66,8 @@ ir::Node* Sub(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* GT(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ensure_pool();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::GT;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -63,12 +77,18 @@ ir::Node* GT(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* LT(ir::Node* a, ir::Node* b) noexcept {
-    // LT(a, b) = GT(b, a)
-    return GT(b, a);
+    ensure_pool();
+    ir::Node* n = g_pool->alloc();
+    if (!n) return nullptr;
+    n->kind = ir::NodeKind::LT;
+    n->result_kind = ir::ResultKind::BITMASK;
+    n->left = a;
+    n->right = b;
+    return n;
 }
 
 ir::Node* GE(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::GE;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -78,7 +98,7 @@ ir::Node* GE(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* LE(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LE;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -88,7 +108,7 @@ ir::Node* LE(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* EQ(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::EQ;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -98,7 +118,7 @@ ir::Node* EQ(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* And(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::AND;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -108,7 +128,7 @@ ir::Node* And(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Or(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::OR;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -118,7 +138,7 @@ ir::Node* Or(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Not(ir::Node* a) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::NOT;
     n->result_kind = ir::ResultKind::BITMASK;
@@ -127,7 +147,8 @@ ir::Node* Not(ir::Node* a) noexcept {
 }
 
 ir::Node* Select(ir::Node* cond, ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ensure_pool();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::SELECT;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -138,7 +159,7 @@ ir::Node* Select(ir::Node* cond, ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Mul(ir::Node* a, ir::Node* b) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::MUL;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -148,7 +169,7 @@ ir::Node* Mul(ir::Node* a, ir::Node* b) noexcept {
 }
 
 ir::Node* Popcnt(ir::Node* a) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::POPCNT;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -157,7 +178,7 @@ ir::Node* Popcnt(ir::Node* a) noexcept {
 }
 
 ir::Node* LSL(ir::Node* a, int shift) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LSL;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -167,7 +188,7 @@ ir::Node* LSL(ir::Node* a, int shift) noexcept {
 }
 
 ir::Node* LSR(ir::Node* a, int shift) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::LSR;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -177,7 +198,7 @@ ir::Node* LSR(ir::Node* a, int shift) noexcept {
 }
 
 ir::Node* Sum(const std::vector<ir::Node*>& operands) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::SUM;
     n->result_kind = ir::ResultKind::BITPLANE;
@@ -186,7 +207,7 @@ ir::Node* Sum(const std::vector<ir::Node*>& operands) noexcept {
 }
 
 ir::Node* InferenceCount(ir::Node* cond) noexcept {
-    ir::Node* n = g_pool.alloc();
+    ir::Node* n = g_pool->alloc();
     if (!n) return nullptr;
     n->kind = ir::NodeKind::INFERENCE_COUNT;
     n->result_kind = ir::ResultKind::BITPLANE;

@@ -60,6 +60,17 @@ __attribute__((visibility("default"))) void* apex_create_universal_test_logic(vo
 // Returns ir_root_ptr for: Field0 > 10
 __attribute__((visibility("default"))) void* apex_create_simple_logic(void);
 
+// IR Builder functions for external language bindings
+__attribute__((visibility("default"))) void* apex_builder_load(const char* name);
+__attribute__((visibility("default"))) void* apex_builder_const(int64_t value);
+__attribute__((visibility("default"))) void* apex_builder_add(void* a, void* b);
+__attribute__((visibility("default"))) void* apex_builder_gt(void* a, void* b);
+__attribute__((visibility("default"))) void* apex_builder_ge(void* a, void* b);
+__attribute__((visibility("default"))) void* apex_builder_lt(void* a, void* b);
+__attribute__((visibility("default"))) void* apex_builder_and(void* a, void* b);
+__attribute__((visibility("default"))) void* apex_builder_select(void* cond, void* a, void* b);
+__attribute__((visibility("default"))) void* apex_builder_sum(void** operands, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

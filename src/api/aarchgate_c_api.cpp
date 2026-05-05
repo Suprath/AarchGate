@@ -11,9 +11,14 @@
 
 using namespace apex;
 
+#include "apex/jit/ir.hpp"
+
 extern "C" {
 
 apex_engine_h apex_create(void) {
+    if (apex::builder::g_pool == nullptr) {
+        apex::builder::g_pool = new apex::builder::NodePool();
+    }
     try {
         return new ApexEngine();
     } catch (...) {
@@ -97,6 +102,47 @@ void* apex_create_simple_logic(void) {
     auto c10 = apex::builder::Const(10);
     auto root = apex::builder::GT(f0, c10);
     return root;
+}
+
+void* apex_builder_load(const char* name) {
+    return apex::builder::Load(name);
+}
+
+void* apex_builder_const(int64_t value) {
+    return apex::builder::Const(value);
+}
+
+void* apex_builder_add(void* a, void* b) {
+    return apex::builder::Add(static_cast<ir::Node*>(a), static_cast<ir::Node*>(b));
+}
+
+void* apex_builder_gt(void* a, void* b) {
+    return apex::builder::GT(static_cast<ir::Node*>(a), static_cast<ir::Node*>(b));
+}
+
+void* apex_builder_ge(void* a, void* b) {
+    return apex::builder::GE(static_cast<ir::Node*>(a), static_cast<ir::Node*>(b));
+}
+
+void* apex_builder_lt(void* a, void* b) {
+    return apex::builder::LT(static_cast<ir::Node*>(a), static_cast<ir::Node*>(b));
+}
+
+void* apex_builder_and(void* a, void* b) {
+    return apex::builder::And(static_cast<ir::Node*>(a), static_cast<ir::Node*>(b));
+}
+
+void* apex_builder_select(void* cond, void* a, void* b) {
+    return apex::builder::Select(static_cast<ir::Node*>(cond), static_cast<ir::Node*>(a), static_cast<ir::Node*>(b));
+}
+
+void* apex_builder_sum(void** operands, size_t count) {
+    std::vector<ir::Node*> nodes;
+    nodes.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        nodes.push_back(static_cast<ir::Node*>(operands[i]));
+    }
+    return apex::builder::Sum(nodes);
 }
 
 } // extern "C"
