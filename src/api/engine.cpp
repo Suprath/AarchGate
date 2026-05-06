@@ -152,10 +152,15 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
         for (auto* op : sum_node->operands) {
             if (op->kind == ir::NodeKind::SELECT) {
                 masks_to_popcount.push_back(op->cond->slot_id);
+                int64_t right_val = 0;
+                if (op->right && op->right->kind == ir::NodeKind::CONST) {
+                    right_val = static_cast<int64_t>(op->right->const_value);
+                }
+                base_sum += right_val;
                 if (op->left && op->left->kind == ir::NodeKind::CONST) {
-                    delta_weights.push_back(static_cast<int64_t>(op->left->const_value));
+                    delta_weights.push_back(static_cast<int64_t>(op->left->const_value) - right_val);
                 } else {
-                    delta_weights.push_back(op->weight);
+                    delta_weights.push_back(static_cast<int64_t>(op->weight) - right_val);
                 }
             } else {
                 masks_to_popcount.push_back(op->slot_id);
@@ -539,6 +544,66 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
     for (auto& th : threads) th.join();
     for (uint64_t r : results) total += r;
     return total;
+}
+
+std::vector<double> ApexEngine::execute_vector(const void* data_ptr, size_t row_count, double precision_multiplier) {
+    std::vector<double> results(row_count, 0.0);
+    if (expr_logic_.empty()) return results;
+
+    auto meta_it = expr_logic_.begin();
+    if (meta_it == expr_logic_.end()) return results;
+
+    const std::string& schema_name = meta_it->first;
+    const ExprCompiledLogic& expr_logic = meta_it->second;
+
+    auto schema_it = schema_metadata_.find(schema_name);
+    if (schema_it == schema_metadata_.end()) return results;
+
+    size_t row_stride = schema_it->second.row_stride;
+    const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
+
+    uint64_t* scratchpad = (uint64_t*)std::malloc(32768 * sizeof(uint64_t));
+    if (!scratchpad) return results;
+
+    for (size_t chunk = 0; chunk * 64 < row_count; chunk++) {
+        const void* chunk_ptr = base + chunk * 64 * row_stride;
+        size_t rows_in_chunk = std::min(size_t(64), row_count - chunk * 64);
+        
+        std::memset(scratchpad, 0, 32768 * sizeof(uint64_t));
+        
+        uint64_t chunk_mask = process_chunk_expr(chunk_ptr, row_stride, rows_in_chunk, expr_logic, scratchpad);
+
+        size_t start_idx = chunk * 64;
+        if (expr_logic.result_kind == ir::ResultKind::BITMASK) {
+            for (size_t r = 0; r < rows_in_chunk; ++r) {
+                double val = ((chunk_mask >> r) & 1) ? 1.0 : 0.0;
+                results[start_idx + r] = val;
+            }
+        } else if (!expr_logic.delta_weights.empty()) {
+            for (size_t r = 0; r < rows_in_chunk; ++r) {
+                int64_t row_sum = static_cast<int64_t>(expr_logic.base_sum);
+                for (size_t i = 0; i < expr_logic.delta_weights.size(); ++i) {
+                    int mask_slot = expr_logic.masks_to_popcount[i];
+                    if ((scratchpad[mask_slot] >> r) & 1) {
+                        row_sum += expr_logic.delta_weights[i];
+                    }
+                }
+                results[start_idx + r] = static_cast<double>(row_sum) / precision_multiplier;
+            }
+        } else {
+            for (size_t r = 0; r < rows_in_chunk; ++r) {
+                int64_t row_sum = 0;
+                for (int b = 0; b < 64; ++b) {
+                    if ((scratchpad[b] >> r) & 1) {
+                        row_sum |= (1ULL << b);
+                    }
+                }
+                results[start_idx + r] = static_cast<double>(row_sum) / precision_multiplier;
+            }
+        }
+    }
+    std::free(scratchpad);
+    return results;
 }
 
 } // namespace apex

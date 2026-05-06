@@ -36,6 +36,7 @@ public:
 
     uint64_t execute(const void* data_ptr, size_t row_count);
     uint64_t execute_parallel(const void* data_ptr, size_t row_count, int num_threads = -1) noexcept;
+    std::vector<double> execute_vector(const void* data_ptr, size_t row_count, double precision_multiplier);
 
     // Native Bit-Sliced Path: Zero-Overhead Silicon Limit
     // bit_planes: contiguous block of [num_blocks * num_fields * 64] uint64s

@@ -74,7 +74,7 @@ int main() {
     using namespace apex::builder;
     std::vector<ir::Node*> trees;
     for (const auto& tree : model) {
-        auto* t = Select(GT(Load("f" + std::to_string(tree.feature_idx)), Const(tree.threshold)),
+        auto* t = Select(GT(Load(("f" + std::to_string(tree.feature_idx)).c_str()), Const(tree.threshold)),
                          Const(tree.weight_true), Const(tree.weight_false));
         trees.push_back(t);
     }

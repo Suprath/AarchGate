@@ -65,6 +65,23 @@ static uint64_t py_execute(PyApexEngine& engine, py::buffer b, size_t count) {
     return apex_execute(engine.get_handle(), info.ptr, count);
 }
 
+static py::array_t<double> py_execute_batch(PyApexEngine& engine, py::buffer b, size_t count, double precision_multiplier) {
+    py::buffer_info info = b.request();
+    
+    py::array_t<double> result(count);
+    py::buffer_info r_info = result.request();
+    double* out = static_cast<double*>(r_info.ptr);
+    
+    apex::ApexEngine* eng = static_cast<apex::ApexEngine*>(engine.get_handle());
+    std::vector<double> preds;
+    {
+        py::gil_scoped_release release;
+        preds = eng->execute_vector(info.ptr, count, precision_multiplier);
+    }
+    std::memcpy(out, preds.data(), count * sizeof(double));
+    return result;
+}
+
 static uint64_t py_execute_parallel(PyApexEngine& engine, py::buffer b, size_t count, int num_threads) {
     py::buffer_info info = b.request();
     py::gil_scoped_release release;
@@ -148,6 +165,7 @@ PYBIND11_MODULE(aarchgate_python, m) {
     m.def("register_schema", &py_register_schema);
     m.def("set_logic", &py_set_logic);
     m.def("execute", &py_execute);
+    m.def("execute_batch", &py_execute_batch);
     m.def("execute_parallel", &py_execute_parallel);
     m.def("execute_native", &py_execute_native);
     m.def("execute_native_parallel", &py_execute_native_parallel);
