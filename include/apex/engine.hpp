@@ -76,6 +76,7 @@ private:
         std::vector<const core::FieldDescriptor*> fields; // Maps index to descriptor
         ExecutionMode mode;
         ir::ResultKind result_kind;
+        std::string msl_source; // Dynamic MSL transpiled source string
         
         // --- Hybrid Popcount Aggregation ---
         uint64_t base_sum = 0;
@@ -83,6 +84,8 @@ private:
         std::vector<int> masks_to_popcount;
         int active_bits = 64;
     };
+
+    std::string generate_msl_source(ir::Node* root, std::string_view schema_name) const;
 
     core::SchemaRegistry registry_;
     jit::JitCompiler compiler_;

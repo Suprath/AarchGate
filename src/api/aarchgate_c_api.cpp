@@ -13,6 +13,16 @@ using namespace apex;
 
 #include "apex/jit/ir.hpp"
 
+#undef GE
+#undef GT
+#undef LE
+#undef LT
+#undef EQ
+#undef AND
+#undef OR
+#undef XOR
+#undef NOT
+
 extern "C" {
 
 apex_engine_h apex_create(void) {

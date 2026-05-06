@@ -18,7 +18,8 @@ namespace apex {
 
 enum class ExecutionMode : int {
     BIT_SLICED = 0,
-    SCALAR = 1
+    SCALAR = 1,
+    GPU_THROUGHPUT = 2
 };
 
 } // namespace apex

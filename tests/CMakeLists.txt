@@ -109,3 +109,12 @@ if(asmjit_FOUND)
     endif()
 endif()
 add_test(NAME ZeroCopySHMTests COMMAND test_zero_copy_shm)
+
+# Metal GPU Throughput test
+if(APPLE)
+    add_executable(test_metal_throughput test_metal_throughput.cpp)
+    target_include_directories(test_metal_throughput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    target_link_libraries(test_metal_throughput PRIVATE aarchgate "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+    target_compile_options(test_metal_throughput PRIVATE ${APEX_COMPILE_FLAGS})
+    add_test(NAME MetalThroughputTests COMMAND test_metal_throughput)
+endif()

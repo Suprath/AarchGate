@@ -50,6 +50,10 @@ set(APEX_SOURCES
     src/telemetry/telemetry.cpp
 )
 
+if(APPLE)
+  list(APPEND APEX_SOURCES src/gpu/metal_device.mm)
+endif()
+
 # OBJECT library: shared compilation unit for linking into both SHARED and EXECUTABLE
 add_library(apex_obj OBJECT ${APEX_SOURCES})
 target_compile_options(apex_obj PRIVATE ${APEX_COMPILE_FLAGS})
@@ -134,6 +138,10 @@ endif()
 # Link external libraries to apex_obj (shared compilation unit)
 target_link_libraries(apex_obj PRIVATE Threads::Threads)
 
+if(APPLE)
+    target_link_libraries(apex_obj PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+endif()
+
 if(asmjit_FOUND)
     target_link_libraries(apex_obj PRIVATE asmjit::asmjit)
     target_compile_definitions(apex_obj PRIVATE APEX_HAS_ASMJIT)
@@ -168,6 +176,10 @@ set_target_properties(aarchgate PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 
 # Propagate external library links to aarchgate shared library
 target_link_libraries(aarchgate PRIVATE Threads::Threads)
+
+if(APPLE)
+    target_link_libraries(aarchgate PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+endif()
 
 if(asmjit_FOUND)
     target_link_libraries(aarchgate PRIVATE asmjit::asmjit)

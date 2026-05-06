@@ -12,6 +12,7 @@
 #include <cstring>
 #include <vector>
 #include <functional>
+#include <unordered_set>
 #include <thread>
 #include <cstdlib>
 #include <cstdio>
@@ -19,6 +20,7 @@
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
+#include "apex/gpu/metal_device.hpp"
 #endif
 
 namespace apex {
@@ -86,28 +88,41 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     active_bits = 64;
 
     // STEP 1.5: Mark SUM and SELECT nodes as skip_jit BEFORE compilation
-    // so the compiler knows they are handled natively by the engine.
-    ir::Node* effective_root = expr_root;
-    if (effective_root->kind == ir::NodeKind::ADD && 
-        effective_root->left->kind == ir::NodeKind::SUM && 
-        effective_root->right->kind == ir::NodeKind::CONST) {
-        effective_root->skip_jit = true;
-        effective_root->right->skip_jit = true;
-        effective_root = effective_root->left;
-    }
+    // so the compiler knows they are handled natively by the engine on CPU.
+    // For GPU execution, we need to compile the entire AST tree, so we reset skip_jit to false.
+    if (mode == ExecutionMode::BIT_SLICED) {
+        ir::Node* effective_root = expr_root;
+        if (effective_root->kind == ir::NodeKind::ADD && 
+            effective_root->left->kind == ir::NodeKind::SUM && 
+            effective_root->right->kind == ir::NodeKind::CONST) {
+            effective_root->skip_jit = true;
+            effective_root->right->skip_jit = true;
+            effective_root = effective_root->left;
+        }
 
-    if (effective_root->kind == ir::NodeKind::SUM) {
-        effective_root->skip_jit = true;
-        for (auto* op : effective_root->operands) {
-            if (op->kind == ir::NodeKind::SELECT) {
-                op->skip_jit = true;
+        if (effective_root->kind == ir::NodeKind::SUM) {
+            effective_root->skip_jit = true;
+            for (auto* op : effective_root->operands) {
+                if (op->kind == ir::NodeKind::SELECT) {
+                    op->skip_jit = true;
+                }
             }
         }
+    } else if (mode == ExecutionMode::GPU_THROUGHPUT) {
+        std::function<void(ir::Node*)> reset_skip_jit = [&](ir::Node* n) {
+            if (!n) return;
+            n->skip_jit = false;
+            reset_skip_jit(n->left);
+            reset_skip_jit(n->right);
+            reset_skip_jit(n->cond);
+            for (auto* op : n->operands) reset_skip_jit(op);
+        };
+        reset_skip_jit(expr_root);
     }
 
     // STEP 2: Compile — ExpressionAnalyzer sets node->field_idx and node->slot_id
     jit::ExprKernelFunc kernel = nullptr;
-    if (mode == ExecutionMode::BIT_SLICED) {
+    if (mode == ExecutionMode::BIT_SLICED || mode == ExecutionMode::GPU_THROUGHPUT) {
         kernel = compiler_.compile_expression(expr_root, registry_, schema_name, active_bits);
     } else {
         kernel = compiler_.compile_scalar_expression(expr_root, registry_, schema_name);
@@ -168,12 +183,18 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
             }
         }
     }
+    std::string msl_source;
+    if (mode == ExecutionMode::GPU_THROUGHPUT) {
+        msl_source = generate_msl_source(expr_root, schema_name);
+    }
+
     // STEP 5: Store compiled logic
     ExprCompiledLogic compiled;
     compiled.kernel          = kernel;
     compiled.fields          = std::move(fields);
     compiled.mode            = mode;
     compiled.result_kind     = expr_root->result_kind;
+    compiled.msl_source      = std::move(msl_source);
     compiled.base_sum        = base_sum;
     compiled.delta_weights   = std::move(delta_weights);
     compiled.masks_to_popcount = std::move(masks_to_popcount);
@@ -298,6 +319,41 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
             auto schema_it = schema_metadata_.find(schema_name);
             if (schema_it == schema_metadata_.end()) return 0;
 
+            if (expr_logic.mode == ExecutionMode::GPU_THROUGHPUT) {
+                #ifdef __APPLE__
+                size_t num_blocks = (row_count + 63) / 64;
+                size_t num_fields = expr_logic.fields.size();
+                size_t row_stride = schema_it->second.row_stride;
+                const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
+
+                uint64_t* bit_planes = nullptr;
+                size_t size = num_blocks * num_fields * 64 * sizeof(uint64_t);
+                if (posix_memalign((void**)&bit_planes, 4096, size) == 0) {
+                    std::memset(bit_planes, 0, size);
+
+                    for (size_t block = 0; block < num_blocks; ++block) {
+                        size_t rows_in_block = std::min(size_t(64), row_count - block * 64);
+                        const void* block_ptr = base + block * 64 * row_stride;
+                        
+                        for (size_t f = 0; f < num_fields; ++f) {
+                            if (expr_logic.fields[f]) {
+                                compute::ColumnBuffer temp_buf;
+                                gather_field(block_ptr, expr_logic.fields[f], row_stride, rows_in_block, temp_buf);
+                                
+                                uint64_t* block_dest = bit_planes + (block * num_fields * 64) + (f * 64);
+                                slicer_.slice_n(temp_buf.data, rows_in_block, block_dest, 64);
+                            }
+                        }
+                    }
+
+                    auto& device = gpu::MetalDevice::instance();
+                    uint64_t final_sum = device.dispatch(schema_name, bit_planes, num_blocks, num_fields, expr_logic.msl_source, expr_logic.delta_weights, expr_logic.base_sum);
+                    std::free(bit_planes);
+                    return final_sum;
+                }
+                #endif
+                return 0;
+            }
             size_t row_stride = schema_it->second.row_stride;
             int64_t total_matches = 0;
             const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
@@ -397,6 +453,16 @@ uint64_t ApexEngine::execute_native(std::string_view schema_name, const uint64_t
     auto it = expr_logic_.find(std::string(schema_name));
     if (it == expr_logic_.end()) return 0;
     const auto& logic = it->second;
+
+    if (logic.mode == ExecutionMode::GPU_THROUGHPUT) {
+        #ifdef __APPLE__
+        auto& device = gpu::MetalDevice::instance();
+        return device.dispatch(schema_name, bit_planes, num_blocks, logic.fields.size(), logic.msl_source, logic.delta_weights, logic.base_sum);
+        #else
+        std::cerr << "[AARCHGATE ERROR] Metal GPU is only supported on Apple macOS!" << std::endl;
+        return 0;
+        #endif
+    }
     
     auto schema_it = schema_metadata_.find(std::string(schema_name));
     if (schema_it == schema_metadata_.end()) return 0;
@@ -604,6 +670,313 @@ std::vector<double> ApexEngine::execute_vector(const void* data_ptr, size_t row_
     }
     std::free(scratchpad);
     return results;
+}
+
+std::string ApexEngine::generate_msl_source(ir::Node* root, std::string_view schema_name) const {
+    size_t num_fields = 0;
+    auto schema_it = schema_metadata_.find(std::string(schema_name));
+    if (schema_it != schema_metadata_.end()) {
+        num_fields = schema_it->second.fields.size();
+    }
+
+    // 1. Perform Topological Sorting (Post-Order DFS) first to determine maximum scratchpad slot usage
+    std::vector<ir::Node*> post_order;
+    std::unordered_set<ir::Node*> visited;
+    std::function<void(ir::Node*)> dfs = [&](ir::Node* n) {
+        if (!n || visited.count(n)) return;
+        visited.insert(n);
+        dfs(n->left);
+        dfs(n->right);
+        dfs(n->cond);
+        for (auto* op : n->operands) dfs(op);
+        post_order.push_back(n);
+    };
+    dfs(root);
+
+    // Assign a dedicated, sequential slot_id to every node in the tree for GPU scratchpad isolation
+    size_t next_slot_id = 0;
+    for (auto* node : post_order) {
+        if (!node->skip_jit) {
+            node->slot_id = next_slot_id++;
+        }
+    }
+    size_t scratchpad_size = next_slot_id;
+    if (scratchpad_size == 0) scratchpad_size = 1;
+
+    // 2. Core Kogge-Stone parallel prefix scan helpers and evaluate kernel header
+    std::string msl = 
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n\n"
+        "inline uint64_t shuffle_up_64(uint64_t val, ushort delta) {\n"
+        "    uint2 parts = as_type<uint2>(val);\n"
+        "    parts.x = simd_shuffle_up(parts.x, delta);\n"
+        "    parts.y = simd_shuffle_up(parts.y, delta);\n"
+        "    return as_type<uint64_t>(parts);\n"
+        "}\n\n"
+        "inline uint64_t shuffle_down_64(uint64_t val, ushort delta) {\n"
+        "    uint2 parts = as_type<uint2>(val);\n"
+        "    parts.x = simd_shuffle_down(parts.x, delta);\n"
+        "    parts.y = simd_shuffle_down(parts.y, delta);\n"
+        "    return as_type<uint64_t>(parts);\n"
+        "}\n\n"
+        "inline void kogge_stone_scan(uint64_t g, uint64_t p, thread uint64_t& cur_g, thread uint64_t& cur_p, ushort lane_id) {\n"
+        "    cur_g = g;\n"
+        "    cur_p = p;\n"
+        "    uint64_t g_prev, p_prev;\n"
+        "    g_prev = shuffle_up_64(cur_g, 1);\n"
+        "    p_prev = shuffle_up_64(cur_p, 1);\n"
+        "    if (lane_id >= 1) {\n"
+        "        cur_g = cur_g | (cur_p & g_prev);\n"
+        "        cur_p = cur_p & p_prev;\n"
+        "    }\n"
+        "    g_prev = shuffle_up_64(cur_g, 2);\n"
+        "    p_prev = shuffle_up_64(cur_p, 2);\n"
+        "    if (lane_id >= 2) {\n"
+        "        cur_g = cur_g | (cur_p & g_prev);\n"
+        "        cur_p = cur_p & p_prev;\n"
+        "    }\n"
+        "    g_prev = shuffle_up_64(cur_g, 4);\n"
+        "    p_prev = shuffle_up_64(cur_p, 4);\n"
+        "    if (lane_id >= 4) {\n"
+        "        cur_g = cur_g | (cur_p & g_prev);\n"
+        "        cur_p = cur_p & p_prev;\n"
+        "    }\n"
+        "    g_prev = shuffle_up_64(cur_g, 8);\n"
+        "    p_prev = shuffle_up_64(cur_p, 8);\n"
+        "    if (lane_id >= 8) {\n"
+        "        cur_g = cur_g | (cur_p & g_prev);\n"
+        "        cur_p = cur_p & p_prev;\n"
+        "    }\n"
+        "    g_prev = shuffle_up_64(cur_g, 16);\n"
+        "    p_prev = shuffle_up_64(cur_p, 16);\n"
+        "    if (lane_id >= 16) {\n"
+        "        cur_g = cur_g | (cur_p & g_prev);\n"
+        "        cur_p = cur_p & p_prev;\n"
+        "    }\n"
+        "}\n\n"
+        "kernel void bit_sliced_evaluate(\n"
+        "    device const uint64_t* columns         [[buffer(0)]],\n"
+        "    device uint64_t* output_masks          [[buffer(1)]],\n"
+        "    uint3 group_idx                        [[threadgroup_position_in_grid]],\n"
+        "    uint thread_in_group                   [[thread_index_in_threadgroup]],\n"
+        "    uint simd_id                           [[simdgroup_index_in_threadgroup]],\n"
+        "    uint lane_id                           [[thread_index_in_simdgroup]]\n"
+        ") {\n"
+        "    const uint block_idx = group_idx.x;\n"
+        "    const uint bit_idx = thread_in_group;\n\n"
+        "    uint64_t scratchpad[" + std::to_string(scratchpad_size) + "] = {0};\n"
+        "    threadgroup uint64_t shared_A[64];\n"
+        "    threadgroup uint64_t shared_B[64];\n"
+        "    threadgroup uint64_t shared_sums[2];\n"
+        "    threadgroup uint64_t shared_carry;\n\n";
+
+    // 3. Emit dynamic MSL operations for each analytical node
+    for (auto* node : post_order) {
+        if (node->skip_jit) continue;
+
+        switch (node->kind) {
+            case ir::NodeKind::LOAD: {
+                msl += "    scratchpad[" + std::to_string(node->slot_id) + "] = columns[block_idx * " 
+                       + std::to_string(num_fields) + " * 64 + " + std::to_string(node->field_idx) + " * 64 + bit_idx];\n";
+                break;
+            }
+            case ir::NodeKind::CONST: {
+                msl += "    scratchpad[" + std::to_string(node->slot_id) + "] = (((" 
+                       + std::to_string(node->const_value) + "ULL) >> bit_idx) & 1) ? 0xFFFFFFFFFFFFFFFFULL : 0ULL;\n";
+                break;
+            }
+            case ir::NodeKind::AND: {
+                msl += "    scratchpad[" + std::to_string(node->slot_id) + "] = scratchpad[" 
+                       + std::to_string(node->left->slot_id) + "] & scratchpad[" + std::to_string(node->right->slot_id) + "];\n";
+                break;
+            }
+            case ir::NodeKind::OR: {
+                msl += "    scratchpad[" + std::to_string(node->slot_id) + "] = scratchpad[" 
+                       + std::to_string(node->left->slot_id) + "] | scratchpad[" + std::to_string(node->right->slot_id) + "];\n";
+                break;
+            }
+
+            case ir::NodeKind::NOT: {
+                msl += "    scratchpad[" + std::to_string(node->slot_id) + "] = ~scratchpad[" 
+                       + std::to_string(node->left->slot_id) + "];\n";
+                break;
+            }
+            case ir::NodeKind::SELECT: {
+                msl += "    scratchpad[" + std::to_string(node->slot_id) + "] = (scratchpad[" 
+                       + std::to_string(node->cond->slot_id) + "] & scratchpad[" + std::to_string(node->left->slot_id) + "]) | (~scratchpad[" 
+                       + std::to_string(node->cond->slot_id) + "] & scratchpad[" + std::to_string(node->right->slot_id) + "]);\n";
+                break;
+            }
+            case ir::NodeKind::GT:
+            case ir::NodeKind::GE:
+            case ir::NodeKind::LT:
+            case ir::NodeKind::LE:
+            case ir::NodeKind::EQ: {
+                msl += "    {\n"
+                       "        shared_A[bit_idx] = scratchpad[" + std::to_string(node->left->slot_id) + "];\n"
+                       "        shared_B[bit_idx] = scratchpad[" + std::to_string(node->right->slot_id) + "];\n"
+                       "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+                
+                if (node->kind == ir::NodeKind::GT || node->kind == ir::NodeKind::GE) {
+                    msl += "        uint64_t mask_gt = 0;\n"
+                           "        uint64_t mask_eq = ~0ULL;\n"
+                           "        for (int b = 63; b >= 0; --b) {\n"
+                           "            uint64_t a_plane = shared_A[b];\n"
+                           "            uint64_t b_plane = shared_B[b];\n"
+                           "            mask_gt = mask_gt | (mask_eq & a_plane & ~b_plane);\n"
+                           "            mask_eq = mask_eq & ~(a_plane ^ b_plane);\n"
+                           "        }\n";
+                    if (node->kind == ir::NodeKind::GT) {
+                        msl += "        scratchpad[" + std::to_string(node->slot_id) + "] = mask_gt;\n";
+                    } else {
+                        msl += "        scratchpad[" + std::to_string(node->slot_id) + "] = mask_gt | mask_eq;\n";
+                    }
+                } else if (node->kind == ir::NodeKind::LT || node->kind == ir::NodeKind::LE) {
+                    msl += "        uint64_t mask_lt = 0;\n"
+                           "        uint64_t mask_eq = ~0ULL;\n"
+                           "        for (int b = 63; b >= 0; --b) {\n"
+                           "            uint64_t a_plane = shared_A[b];\n"
+                           "            uint64_t b_plane = shared_B[b];\n"
+                           "            mask_lt = mask_lt | (mask_eq & ~a_plane & b_plane);\n"
+                           "            mask_eq = mask_eq & ~(a_plane ^ b_plane);\n"
+                           "        }\n";
+                    if (node->kind == ir::NodeKind::LT) {
+                        msl += "        scratchpad[" + std::to_string(node->slot_id) + "] = mask_lt;\n";
+                    } else {
+                        msl += "        scratchpad[" + std::to_string(node->slot_id) + "] = mask_lt | mask_eq;\n";
+                    }
+                } else if (node->kind == ir::NodeKind::EQ) {
+                    msl += "        uint64_t mask_eq = ~0ULL;\n"
+                           "        for (int b = 63; b >= 0; --b) {\n"
+                           "            uint64_t a_plane = shared_A[b];\n"
+                           "            uint64_t b_plane = shared_B[b];\n"
+                           "            mask_eq = mask_eq & ~(a_plane ^ b_plane);\n"
+                           "        }\n"
+                           "        scratchpad[" + std::to_string(node->slot_id) + "] = mask_eq;\n";
+                }
+                msl += "        threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+                       "    }\n";
+                break;
+            }
+            case ir::NodeKind::ADD: {
+                msl += "    {\n"
+                       "        uint64_t g = scratchpad[" + std::to_string(node->left->slot_id) + "] & scratchpad[" + std::to_string(node->right->slot_id) + "];\n"
+                       "        uint64_t p = scratchpad[" + std::to_string(node->left->slot_id) + "] ^ scratchpad[" + std::to_string(node->right->slot_id) + "];\n"
+                       "        uint64_t cur_g, cur_p;\n"
+                       "        kogge_stone_scan(g, p, cur_g, cur_p, lane_id);\n"
+                       "        if (lane_id == 31 && simd_id == 0) {\n"
+                       "            shared_carry = cur_g;\n"
+                       "        }\n"
+                       "        threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+                       "        if (simd_id == 1) {\n"
+                       "            cur_g = cur_g | (shared_carry & cur_p);\n"
+                       "        }\n"
+                       "        uint64_t carry_in = 0;\n"
+                       "        if (simd_id == 0) {\n"
+                       "            carry_in = (lane_id == 0) ? 0ULL : shuffle_up_64(cur_g, 1);\n"
+                       "        } else {\n"
+                       "            carry_in = (lane_id == 0) ? shared_carry : shuffle_up_64(cur_g, 1);\n"
+                       "        }\n"
+                       "        scratchpad[" + std::to_string(node->slot_id) + "] = scratchpad[" + std::to_string(node->left->slot_id) + "] ^ scratchpad[" + std::to_string(node->right->slot_id) + "] ^ carry_in;\n"
+                       "    }\n";
+                break;
+            }
+            case ir::NodeKind::SUB: {
+                msl += "    {\n"
+                       "        uint64_t g = scratchpad[" + std::to_string(node->left->slot_id) + "] & ~scratchpad[" + std::to_string(node->right->slot_id) + "];\n"
+                       "        uint64_t p = scratchpad[" + std::to_string(node->left->slot_id) + "] ^ ~scratchpad[" + std::to_string(node->right->slot_id) + "];\n"
+                       "        if (lane_id == 0 && simd_id == 0) {\n"
+                       "            g = g | p;\n"
+                       "        }\n"
+                       "        uint64_t cur_g, cur_p;\n"
+                       "        kogge_stone_scan(g, p, cur_g, cur_p, lane_id);\n"
+                       "        if (lane_id == 31 && simd_id == 0) {\n"
+                       "            shared_carry = cur_g;\n"
+                       "        }\n"
+                       "        threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+                       "        if (simd_id == 1) {\n"
+                       "            cur_g = cur_g | (shared_carry & cur_p);\n"
+                       "        }\n"
+                       "        uint64_t carry_in = 0;\n"
+                       "        if (simd_id == 0) {\n"
+                       "            carry_in = (lane_id == 0) ? 1ULL : shuffle_up_64(cur_g, 1);\n"
+                       "        } else {\n"
+                       "            carry_in = (lane_id == 0) ? shared_carry : shuffle_up_64(cur_g, 1);\n"
+                       "        }\n"
+                       "        scratchpad[" + std::to_string(node->slot_id) + "] = scratchpad[" + std::to_string(node->left->slot_id) + "] ^ ~scratchpad[" + std::to_string(node->right->slot_id) + "] ^ carry_in;\n"
+                       "    }\n";
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    // 4. Trace forest structure to gather SUM reduction leaves and weights
+    uint64_t base_sum = 0;
+    std::vector<int64_t> delta_weights;
+    std::vector<int> masks_to_popcount;
+    
+    ir::Node* sum_node = root;
+    if (sum_node->kind == ir::NodeKind::ADD && 
+        sum_node->left->kind == ir::NodeKind::SUM && 
+        sum_node->right->kind == ir::NodeKind::CONST) {
+        base_sum = sum_node->right->const_value;
+        sum_node = sum_node->left;
+    }
+
+    if (sum_node->kind == ir::NodeKind::SUM) {
+        for (auto* op : sum_node->operands) {
+            if (op->kind == ir::NodeKind::SELECT) {
+                masks_to_popcount.push_back(op->cond->slot_id);
+                int64_t right_val = 0;
+                if (op->right && op->right->kind == ir::NodeKind::CONST) {
+                    right_val = static_cast<int64_t>(op->right->const_value);
+                }
+                base_sum += right_val;
+                if (op->left && op->left->kind == ir::NodeKind::CONST) {
+                    delta_weights.push_back(static_cast<int64_t>(op->left->const_value) - right_val);
+                } else {
+                    delta_weights.push_back(static_cast<int64_t>(op->weight) - right_val);
+                }
+            } else {
+                masks_to_popcount.push_back(op->slot_id);
+                delta_weights.push_back(op->weight);
+            }
+        }
+    }
+
+    // 5. Append Two-Stage reduction blocks unrolled natively inside the shader!
+    msl += "\n    // --- Vectorized Aggregator with Two-Stage reduction ---\n"
+           "    int64_t row_sum = " + std::to_string(base_sum) + "LL;\n";
+    for (size_t i = 0; i < delta_weights.size(); ++i) {
+        msl += "    if ((scratchpad[" + std::to_string(masks_to_popcount[i]) + "] >> bit_idx) & 1) {\n"
+               "        row_sum += " + std::to_string(delta_weights[i]) + "LL;\n"
+               "    }\n";
+    }
+
+    msl += "\n"
+           "    // Stage 1: SIMDgroup Reduction via shuffles\n"
+           "    uint64_t local_sum = static_cast<uint64_t>(row_sum);\n"
+           "    local_sum += shuffle_down_64(local_sum, 16);\n"
+           "    local_sum += shuffle_down_64(local_sum, 8);\n"
+           "    local_sum += shuffle_down_64(local_sum, 4);\n"
+           "    local_sum += shuffle_down_64(local_sum, 2);\n"
+           "    local_sum += shuffle_down_64(local_sum, 1);\n"
+           "\n"
+           "    if (lane_id == 0) {\n"
+           "        shared_sums[simd_id] = local_sum;\n"
+           "    }\n"
+           "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+           "\n"
+            "    // Stage 2: Threadgroup Leader write to block-buffered output slot\n"
+            "    if (thread_in_group == 0) {\n"
+            "        uint64_t block_sum = shared_sums[0] + shared_sums[1];\n"
+            "        output_masks[block_idx] = block_sum;\n"
+            "    }\n"
+            "}\n";
+
+    return msl;
 }
 
 } // namespace apex
