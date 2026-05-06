@@ -326,7 +326,7 @@ ExprKernelFunc JitCompiler::compile_expression(ir::Node* root,
         ir::Node* load_node = node;
         std::string field_name(load_node->field_name);
         if (field_to_idx.find(field_name) == field_to_idx.end()) {
-            if (field_to_idx.size() >= 32) return nullptr;
+            if (field_to_idx.size() >= 128) return nullptr;
             field_to_idx[field_name] = static_cast<int>(field_to_idx.size());
         }
         load_node->field_idx = field_to_idx[field_name];

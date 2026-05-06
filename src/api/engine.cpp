@@ -115,12 +115,12 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     if (!kernel) return;
 
     // STEP 3: Collect field descriptors (node->field_idx is now valid)
-    std::vector<const core::FieldDescriptor*> fields(32, nullptr);
+    std::vector<const core::FieldDescriptor*> fields(128, nullptr);
     std::function<void(ir::Node*)> collect_fields = [&](ir::Node* node) {
         if (!node) return;
         if (node->kind == ir::NodeKind::LOAD) {
             int idx = node->field_idx;
-            if (idx >= 0 && idx < 32) {
+            if (idx >= 0 && idx < 128) {
                 const auto* field = registry_.get_field(schema_name, std::string_view(node->field_name));
                 if (field) fields[idx] = field;
             }
@@ -133,7 +133,7 @@ void ApexEngine::set_expression(std::string_view schema_name, ir::Node* expr_roo
     collect_fields(expr_root);
 
     size_t max_idx = 0;
-    for (int i = 0; i < 32; ++i) if (fields[i]) max_idx = i + 1;
+    for (int i = 0; i < 128; ++i) if (fields[i]) max_idx = i + 1;
     fields.resize(max_idx);
 
     // STEP 4: Extract SUM/SELECT metadata (node->slot_id is now valid)
@@ -250,7 +250,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
             }
             field_planes_array_[i] = field_buffers_[i].data;
         }
-        for (size_t i = 5; i < expr_logic.fields.size() && i < 32; ++i) {
+        for (size_t i = 5; i < expr_logic.fields.size() && i < 128; ++i) {
             if (expr_logic.fields[i]) {
                 gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
                 if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
@@ -262,7 +262,7 @@ uint64_t ApexEngine::process_chunk_expr(const void* data_ptr,
             }
         }
     } else {
-        for (size_t i = 0; i < expr_logic.fields.size() && i < 32; ++i) {
+        for (size_t i = 0; i < expr_logic.fields.size() && i < 128; ++i) {
             if (expr_logic.fields[i]) {
                 gather_field(data_ptr, expr_logic.fields[i], row_stride, row_count, field_buffers_[i]);
                 if (expr_logic.mode == ExecutionMode::BIT_SLICED) {
