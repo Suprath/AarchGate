@@ -331,19 +331,38 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
                 if (posix_memalign((void**)&bit_planes, 4096, size) == 0) {
                     std::memset(bit_planes, 0, size);
 
-                    for (size_t block = 0; block < num_blocks; ++block) {
-                        size_t rows_in_block = std::min(size_t(64), row_count - block * 64);
-                        const void* block_ptr = base + block * 64 * row_stride;
-                        
-                        for (size_t f = 0; f < num_fields; ++f) {
-                            if (expr_logic.fields[f]) {
-                                compute::ColumnBuffer temp_buf;
-                                gather_field(block_ptr, expr_logic.fields[f], row_stride, rows_in_block, temp_buf);
+                    size_t num_workers = std::thread::hardware_concurrency();
+                    if (num_workers == 0) num_workers = 8;
+                    if (num_blocks < num_workers) num_workers = num_blocks;
+
+                    std::vector<std::thread> workers;
+                    workers.reserve(num_workers);
+
+                    for (size_t w = 0; w < num_workers; ++w) {
+                        size_t start_block = (num_blocks * w) / num_workers;
+                        size_t end_block = (num_blocks * (w + 1)) / num_workers;
+
+                        workers.emplace_back([=, &expr_logic]() {
+                            compute::BitSlicer slicer;
+                            for (size_t block = start_block; block < end_block; ++block) {
+                                size_t rows_in_block = std::min(size_t(64), row_count - block * 64);
+                                const void* block_ptr = base + block * 64 * row_stride;
                                 
-                                uint64_t* block_dest = bit_planes + (block * num_fields * 64) + (f * 64);
-                                slicer_.slice_n(temp_buf.data, rows_in_block, block_dest, 64);
+                                for (size_t f = 0; f < num_fields; ++f) {
+                                    if (expr_logic.fields[f]) {
+                                        compute::ColumnBuffer temp_buf;
+                                        gather_field(block_ptr, expr_logic.fields[f], row_stride, rows_in_block, temp_buf);
+                                        
+                                        uint64_t* block_dest = bit_planes + (block * num_fields * 64) + (f * 64);
+                                        slicer.slice_n(temp_buf.data, rows_in_block, block_dest, 64);
+                                    }
+                                }
                             }
-                        }
+                        });
+                    }
+
+                    for (auto& worker : workers) {
+                        worker.join();
                     }
 
                     auto& device = gpu::MetalDevice::instance();
