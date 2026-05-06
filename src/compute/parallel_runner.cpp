@@ -166,7 +166,7 @@ static void worker_thread(
 
     const size_t row_stride = config.row_stride;
     const size_t num_fields = config.fields.size();
-    uint64_t total_matches = 0;
+    int64_t total_matches = 0;
 
     // Diagnostic: Ensure fields are populated
     if (num_fields == 0) {
@@ -193,7 +193,15 @@ static void worker_thread(
         alignas(64) const uint64_t* field_planes[32];
         std::memset(field_planes, 0, sizeof(field_planes));
 
-        bool use_simd_5 = (num_fields >= 5 && row_stride >= 40); 
+        bool use_simd_5 = (num_fields >= 5 && 
+                           config.fields[0] && config.fields[1] &&
+                           config.fields[2] && config.fields[3] &&
+                           config.fields[4] &&
+                           config.fields[0]->offset == 0 &&
+                           config.fields[1]->offset == 8 &&
+                           config.fields[2]->offset == 16 &&
+                           config.fields[3]->offset == 24 &&
+                           config.fields[4]->offset == 32); 
 
         if (use_simd_5) {
             if (rows_in_chunk == 64) {
@@ -306,7 +314,7 @@ static void worker_thread(
         uint64_t rows_mask = (rows_in_chunk == 64) ? ~0ULL : (1ULL << rows_in_chunk) - 1;
 
         if (config.result_kind == 1) { // BITMASK
-            total_matches += static_cast<uint64_t>(__builtin_popcountll(kernel_res & rows_mask));
+            total_matches += static_cast<int64_t>(__builtin_popcountll(kernel_res & rows_mask));
         } else if (!config.delta_weights.empty()) { // HYBRID POPCOUNT
             int64_t total_sum = static_cast<int64_t>(config.base_sum) * rows_in_chunk;
             const size_t num_weights = config.delta_weights.size();
@@ -324,7 +332,7 @@ static void worker_thread(
                 int m5 = masks[i+5];
                 int m6 = masks[i+6];
                 int m7 = masks[i+7];
-
+ 
                 uint64_t s0 = scratchpad[m0] & rows_mask;
                 uint64_t s1 = scratchpad[m1] & rows_mask;
                 uint64_t s2 = scratchpad[m2] & rows_mask;
@@ -333,7 +341,7 @@ static void worker_thread(
                 uint64_t s5 = scratchpad[m5] & rows_mask;
                 uint64_t s6 = scratchpad[m6] & rows_mask;
                 uint64_t s7 = scratchpad[m7] & rows_mask;
-
+ 
                 int64_t p0 = __builtin_popcountll(s0);
                 int64_t p1 = __builtin_popcountll(s1);
                 int64_t p2 = __builtin_popcountll(s2);
@@ -342,7 +350,7 @@ static void worker_thread(
                 int64_t p5 = __builtin_popcountll(s5);
                 int64_t p6 = __builtin_popcountll(s6);
                 int64_t p7 = __builtin_popcountll(s7);
-
+ 
                 total_sum += p0 * weights[i];
                 total_sum += p1 * weights[i+1];
                 total_sum += p2 * weights[i+2];
@@ -358,18 +366,18 @@ static void worker_thread(
                 int64_t pop = __builtin_popcountll(scratchpad[mask_slot] & rows_mask);
                 total_sum += pop * weights[i];
             }
-            total_matches += static_cast<uint64_t>(total_sum);
+            total_matches += total_sum;
         } else { // BITPLANE
             for (int i = 0; i < 64; ++i) {
-                total_matches += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i] & rows_mask))) << i;
+                total_matches += (static_cast<int64_t>(__builtin_popcountll(scratchpad[i] & rows_mask))) << i;
             }
         }
     }
-
+ 
     uint64_t cycle_end = read_cycles();
-
+ 
     free(scratchpad);
-    result->count = total_matches;
+    result->count = static_cast<uint64_t>(total_matches);
     result->cycles = cycle_end - cycle_start;
 }
 
@@ -397,7 +405,10 @@ uint64_t ParallelRunner::run(
     int active_tasks = 0;
     for (int t = 0; t < num_threads; ++t) {
         size_t start = t * rows_per_thread;
-        size_t end = (t == num_threads - 1) ? total_rows : start + rows_per_thread;
+        size_t end = start + rows_per_thread;
+        if (end > total_rows || t == num_threads - 1) {
+            end = total_rows;
+        }
 
         if (start >= total_rows) break;
 
@@ -439,7 +450,10 @@ ParallelRunner::ExecutionStats ParallelRunner::run_with_stats(
     int active_tasks = 0;
     for (int t = 0; t < num_threads; ++t) {
         size_t start = t * rows_per_thread;
-        size_t end = (t == num_threads - 1) ? total_rows : start + rows_per_thread;
+        size_t end = start + rows_per_thread;
+        if (end > total_rows || t == num_threads - 1) {
+            end = total_rows;
+        }
 
         if (start >= total_rows) break;
 

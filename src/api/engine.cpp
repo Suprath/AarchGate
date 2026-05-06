@@ -294,13 +294,13 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
             if (schema_it == schema_metadata_.end()) return 0;
 
             size_t row_stride = schema_it->second.row_stride;
-            uint64_t total_matches = 0;
+            int64_t total_matches = 0;
             const uint8_t* base = static_cast<const uint8_t*>(data_ptr);
-
+ 
             // Use heap allocation for large scratchpads to avoid stack smashing
             uint64_t* scratchpad = (uint64_t*)std::malloc(32768 * sizeof(uint64_t));
             if (!scratchpad) return 0;
-
+ 
             // Process in 64-row chunks
             for (size_t chunk = 0; chunk * 64 < row_count; chunk++) {
                 const void* chunk_ptr = base + chunk * 64 * row_stride;
@@ -309,10 +309,10 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
                 std::memset(scratchpad, 0, 32768 * sizeof(uint64_t));
                 
                 uint64_t chunk_mask = process_chunk_expr(chunk_ptr, row_stride, rows_in_chunk, expr_logic, scratchpad);
-
+ 
                 if (expr_logic.result_kind == ir::ResultKind::BITMASK) {
                     uint64_t rows_mask = (rows_in_chunk == 64) ? ~0ULL : (1ULL << rows_in_chunk) - 1;
-                    total_matches += static_cast<uint64_t>(__builtin_popcountll(chunk_mask & rows_mask));
+                    total_matches += static_cast<int64_t>(__builtin_popcountll(chunk_mask & rows_mask));
                 } else if (!expr_logic.delta_weights.empty()) {
                     // HYBRID POPCOUNT AGGREGATOR
                     uint64_t rows_mask = (rows_in_chunk == 64) ? ~0ULL : (1ULL << rows_in_chunk) - 1;
@@ -322,17 +322,17 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
                         int64_t pop = __builtin_popcountll(scratchpad[mask_slot] & rows_mask);
                         chunk_sum += pop * expr_logic.delta_weights[i];
                     }
-                    total_matches += static_cast<uint64_t>(chunk_sum);
+                    total_matches += chunk_sum;
                 } else {
                     // BITPLANE (Legacy): Sum(popcount(Plane_i) * 2^i)
                     uint64_t rows_mask = (rows_in_chunk == 64) ? ~0ULL : (1ULL << rows_in_chunk) - 1;
                     for (int i = 0; i < 64; ++i) {
-                        total_matches += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i] & rows_mask))) << i;
+                        total_matches += (static_cast<int64_t>(__builtin_popcountll(scratchpad[i] & rows_mask))) << i;
                     }
                 }
             }
             std::free(scratchpad);
-            return total_matches;
+            return static_cast<uint64_t>(total_matches);
         }
     }
 
