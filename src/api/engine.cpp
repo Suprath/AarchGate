@@ -331,8 +331,7 @@ uint64_t ApexEngine::execute(const void* data_ptr, size_t row_count) {
                 if (posix_memalign((void**)&bit_planes, 4096, size) == 0) {
                     std::memset(bit_planes, 0, size);
 
-                    size_t num_workers = std::thread::hardware_concurrency();
-                    if (num_workers == 0) num_workers = 8;
+                    size_t num_workers = 4; // Limit to 4 to run exclusively on M3 Performance Cores and avoid E-core stragglers
                     if (num_blocks < num_workers) num_workers = num_blocks;
 
                     std::vector<std::thread> workers;
@@ -698,6 +697,23 @@ std::string ApexEngine::generate_msl_source(ir::Node* root, std::string_view sch
         num_fields = schema_it->second.fields.size();
     }
 
+    // Dynamic active bits analysis to narrow GPU loop boundaries
+    int bits_needed = 0;
+    std::function<void(const ir::Node*)> analyze_bits = [&](const ir::Node* n) {
+        if (!n) return;
+        if (n->kind == ir::NodeKind::CONST) {
+            uint64_t val = static_cast<uint64_t>(n->const_value);
+            int bits = (val == 0) ? 1 : 64 - __builtin_clzll(val);
+            bits_needed = std::max(bits_needed, bits);
+        }
+        for (auto* op : n->operands) analyze_bits(op);
+        if (n->left)  analyze_bits(n->left);
+        if (n->right) analyze_bits(n->right);
+    };
+    analyze_bits(root);
+    int active_bits = 64;
+    if (bits_needed <= 32) active_bits = 32;
+
     // 1. Perform Topological Sorting (Post-Order DFS) first to determine maximum scratchpad slot usage
     std::vector<ir::Node*> post_order;
     std::unordered_set<ir::Node*> visited;
@@ -839,7 +855,7 @@ std::string ApexEngine::generate_msl_source(ir::Node* root, std::string_view sch
                 if (node->kind == ir::NodeKind::GT || node->kind == ir::NodeKind::GE) {
                     msl += "        uint64_t mask_gt = 0;\n"
                            "        uint64_t mask_eq = ~0ULL;\n"
-                           "        for (int b = 63; b >= 0; --b) {\n"
+                           "        for (int b = " + std::to_string(active_bits - 1) + "; b >= 0; --b) {\n"
                            "            uint64_t a_plane = shared_A[b];\n"
                            "            uint64_t b_plane = shared_B[b];\n"
                            "            mask_gt = mask_gt | (mask_eq & a_plane & ~b_plane);\n"
@@ -853,7 +869,7 @@ std::string ApexEngine::generate_msl_source(ir::Node* root, std::string_view sch
                 } else if (node->kind == ir::NodeKind::LT || node->kind == ir::NodeKind::LE) {
                     msl += "        uint64_t mask_lt = 0;\n"
                            "        uint64_t mask_eq = ~0ULL;\n"
-                           "        for (int b = 63; b >= 0; --b) {\n"
+                           "        for (int b = " + std::to_string(active_bits - 1) + "; b >= 0; --b) {\n"
                            "            uint64_t a_plane = shared_A[b];\n"
                            "            uint64_t b_plane = shared_B[b];\n"
                            "            mask_lt = mask_lt | (mask_eq & ~a_plane & b_plane);\n"
@@ -866,7 +882,7 @@ std::string ApexEngine::generate_msl_source(ir::Node* root, std::string_view sch
                     }
                 } else if (node->kind == ir::NodeKind::EQ) {
                     msl += "        uint64_t mask_eq = ~0ULL;\n"
-                           "        for (int b = 63; b >= 0; --b) {\n"
+                           "        for (int b = " + std::to_string(active_bits - 1) + "; b >= 0; --b) {\n"
                            "            uint64_t a_plane = shared_A[b];\n"
                            "            uint64_t b_plane = shared_B[b];\n"
                            "            mask_eq = mask_eq & ~(a_plane ^ b_plane);\n"
