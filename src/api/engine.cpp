@@ -712,7 +712,6 @@ std::string ApexEngine::generate_msl_source(ir::Node* root, std::string_view sch
     };
     analyze_bits(root);
     int active_bits = 64;
-    if (bits_needed <= 32) active_bits = 32;
 
     // 1. Perform Topological Sorting (Post-Order DFS) first to determine maximum scratchpad slot usage
     std::vector<ir::Node*> post_order;

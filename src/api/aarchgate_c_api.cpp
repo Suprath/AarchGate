@@ -78,7 +78,12 @@ int apex_set_logic(apex_engine_h handle, const char* schema_name, void* ir_root_
     try {
         ApexEngine* engine = static_cast<ApexEngine*>(handle);
         ir::Node* root = static_cast<ir::Node*>(ir_root_ptr);
-        ExecutionMode exec_mode = (mode == 0) ? ExecutionMode::BIT_SLICED : ExecutionMode::SCALAR;
+        ExecutionMode exec_mode = ExecutionMode::BIT_SLICED;
+        if (mode == 1) {
+            exec_mode = ExecutionMode::SCALAR;
+        } else if (mode == 2) {
+            exec_mode = ExecutionMode::GPU_THROUGHPUT;
+        }
         engine->set_expression(schema_name, root, exec_mode);
         return 0;
     } catch (...) {

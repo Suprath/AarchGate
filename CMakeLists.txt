@@ -57,7 +57,7 @@ endif()
 # OBJECT library: shared compilation unit for linking into both SHARED and EXECUTABLE
 add_library(apex_obj OBJECT ${APEX_SOURCES})
 target_compile_options(apex_obj PRIVATE ${APEX_COMPILE_FLAGS})
-target_include_directories(apex_obj PUBLIC include)
+target_include_directories(apex_obj PUBLIC include PRIVATE src)
 
 # (FlatBuffers generation moved to examples/trading)
 
