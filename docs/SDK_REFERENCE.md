@@ -222,6 +222,35 @@ free(data);
 
 ---
 
+#### `apex_execute_parallel()`
+```c
+uint64_t apex_execute_parallel(
+    apex_engine_h handle,
+    const void* data_ptr,
+    size_t count,
+    int num_threads
+);
+```
+
+**Description**: Execute registered logic concurrently across multiple CPU threads using a persistent internal task pool.
+
+**Parameters**:
+- `handle`: Engine handle
+- `data_ptr`: Pointer to data buffer (row-major)
+- `count`: Number of rows to process
+- `num_threads`: Number of worker threads to use (pass `-1` to auto-detect P-cores)
+
+**Returns**:
+- Total match count on success
+- `(uint64_t)-1` on error
+
+**Example**:
+```c
+uint64_t matches = apex_execute_parallel(engine, data, 128000000, -1);
+```
+
+---
+
 ### Helper Functions
 
 #### `apex_create_universal_test_logic()`
@@ -263,6 +292,78 @@ uint64_t matches = apex_execute(engine, prices, count);
 
 ---
 
+### JIT IR Builder Functions
+
+These functions enable dynamic construction of high-performance JIT AST/IR trees on-the-fly from external languages (such as Python or Java) or runtime environments.
+
+#### `apex_builder_load()`
+```c
+void* apex_builder_load(const char* name);
+```
+Create a node that loads a field value by its name.
+
+#### `apex_builder_const()`
+```c
+void* apex_builder_const(int64_t value);
+```
+Create a constant node with a 64-bit integer value.
+
+#### `apex_builder_add()`
+```c
+void* apex_builder_add(void* a, void* b);
+```
+Create an addition operator node (`a + b`).
+
+#### `apex_builder_gt()`
+```c
+void* apex_builder_gt(void* a, void* b);
+```
+Create a Greater-Than comparison node (`a > b`).
+
+#### `apex_builder_ge()`
+```c
+void* apex_builder_ge(void* a, void* b);
+```
+Create a Greater-Equal comparison node (`a >= b`).
+
+#### `apex_builder_lt()`
+```c
+void* apex_builder_lt(void* a, void* b);
+```
+Create a Less-Than comparison node (`a < b`).
+
+#### `apex_builder_and()`
+```c
+void* apex_builder_and(void* a, void* b);
+```
+Create a boolean logical AND operator node (`a && b`).
+
+#### `apex_builder_not()`
+```c
+void* apex_builder_not(void* a);
+```
+Create a boolean logical NOT operator node (`!a`).
+
+#### `apex_builder_select()`
+```c
+void* apex_builder_select(void* cond, void* a, void* b);
+```
+Create a ternary conditional selection node (`cond ? a : b`).
+
+#### `apex_builder_sum()`
+```c
+void* apex_builder_sum(void** operands, size_t count);
+```
+Create an aggregation summation node (`SUM(op1, op2, ...)`). Used for decision forest models.
+
+#### `apex_builder_set_weight()`
+```c
+void apex_builder_set_weight(void* node, int64_t weight);
+```
+Explicitly set an evaluation weight associated with a node.
+
+---
+
 ## C++ Wrapper API
 
 ### Header File
@@ -276,39 +377,40 @@ uint64_t matches = apex_execute(engine, prices, count);
 class ApexEngine {
 public:
     // Constructor: Creates engine, auto-detects P-cores on Apple Silicon
-    ApexEngine();
+    ApexEngine() noexcept;
     
     // Destructor: Destroys engine
-    ~ApexEngine();
-    
-    // No copying allowed
-    ApexEngine(const ApexEngine&) = delete;
-    ApexEngine& operator=(const ApexEngine&) = delete;
+    ~ApexEngine() noexcept = default;
     
     // Register schema with field vector
     void register_schema(
-        const std::string& name,
+        std::string_view schema_name,
         const std::vector<core::FieldDescriptor>& fields,
-        size_t stride
-    );
+        size_t total_row_stride
+    ) noexcept;
     
     // Set logic with execution mode
     void set_expression(
-        const std::string& schema_name,
+        std::string_view schema_name,
         ir::Node* expr_root,
         ExecutionMode mode = ExecutionMode::BIT_SLICED
     );
     
     // Concurrency Control
-    void set_thread_count(int count);
-    int get_thread_count() const;
+    void set_thread_count(int count) noexcept;
+    int get_thread_count() const noexcept;
 
     // Execute: Returns match count, throws on error
     uint64_t execute(const void* data_ptr, size_t count);
-    uint64_t execute_parallel(const void* data_ptr, size_t count, int num_threads = -1);
-};
+    uint64_t execute_parallel(const void* data_ptr, size_t count, int num_threads = -1) noexcept;
+    
+    // Vector execute: Returns double precision vector outputs (regression forest evaluations)
+    std::vector<double> execute_vector(const void* data_ptr, size_t count, double precision_multiplier);
 
-} // namespace apex
+    // Native Bit-Sliced Execute: Zero-Overhead Silicon Limit Execution on pre-transposed arrays
+    uint64_t execute_native(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks) noexcept;
+    uint64_t execute_native_parallel(std::string_view schema_name, const uint64_t* bit_planes, size_t num_blocks, int num_threads = -1) noexcept;
+};
 ```
 
 ### Usage Example
@@ -603,13 +705,15 @@ public class TradeAnalyzer {
 ### ExecutionMode
 
 ```c
-#define APEX_EXEC_MODE_BIT_SLICED  0  // Default: high throughput
-#define APEX_EXEC_MODE_SCALAR      1  // Low latency: simple loop
+#define APEX_EXEC_MODE_BIT_SLICED     0  // Default: vectorized CPU JIT
+#define APEX_EXEC_MODE_SCALAR         1  // Low latency: simple scalar loop
+#define APEX_EXEC_MODE_GPU_THROUGHPUT 2  // Extreme parallel: Apple Metal GPU acceleration
 ```
 
 | Mode | Throughput | Latency | Batch Size | Use Case |
 |------|-----------|---------|-----------|----------|
-| BIT_SLICED | 1.3B+ TPS | ~100ns per 64 rows | 64+ | High-volume queries |
+| GPU_THROUGHPUT | 10B+ TPS | ~500ns dispatch | 1,000,000+ | Large-scale parallel evaluation, GPU offloading |
+| BIT_SLICED | 1.3B+ TPS | ~100ns per 64 rows | 64+ | High-volume CPU JIT queries |
 | SCALAR | ~4M TPS | ~30µs per row | 1-2 | Single-row evaluation |
 
 ### Field Descriptor
@@ -735,7 +839,7 @@ for (int i = 0; i < num_batches; i++) {
 ### BIT_SLICED (Default)
 
 **When to Use**:
-- Processing ≥64 rows
+- Processing ≥64 rows on the CPU
 - Complex expressions (>5 conditions)
 - High-throughput workloads
 
@@ -749,6 +853,23 @@ for (int i = 0; i < num_batches; i++) {
 2. Compile expression to ARM64 JIT kernel
 3. Execute kernel on bit-planes
 4. Accumulate match mask
+
+### GPU_THROUGHPUT
+
+**When to Use**:
+- Processing massive datasets (≥1,000,000 rows) on Apple Silicon
+- Offloading heavy compute trees to avoid CPU core starvation
+- High-throughput parallel workloads
+
+**Performance**:
+- Throughput: **10 Billion+ TPS** (highly scalable across GPU cores)
+- Latency: Sub-microsecond dispatch (Zero-Copy)
+
+**Implementation**:
+1. Map page-aligned host buffer directly to GPU compute space via shared unified memory
+2. Transpile JIT AST expressions directly into MSL compute shaders
+3. Compile and cache GPU compute pipeline state at runtime
+4. Execute massively parallel bit-sliced operations across threadgroup lanes using Kogge-Stone carry-propagation shuffles
 
 ### SCALAR (Low-Latency)
 

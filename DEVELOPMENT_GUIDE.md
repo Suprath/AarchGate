@@ -77,14 +77,16 @@ All builds use aggressive optimization for production:
 
 - **AsmJit**: Runtime code generation (x86/x64, ARM).
 - **Google Highway**: Portable SIMD library.
+- **Apple Metal**: Low-level GPGPU compute framework (macOS platform).
 - **iceoryx**: Zero-copy IPC and pub-sub transport.
 - **FlatBuffers**: Schema-driven, zero-copy serialization.
 
 ## Performance Targets
 
-- **Throughput**: 10B+ transactions per second.
-- **Latency**: Sub-microsecond p99 (< 1000 ns).
-- **Memory**: Fixed-size, predictable footprint.
+- **Throughput**: 1.3B+ CPU RPS / 10B+ GPU Transactions Per Second.
+- **Latency**: Sub-microsecond p99 (< 1000 ns) per 64-row vector batch.
+- **Memory**: Fixed-size, page-aligned (4096-byte) allocations for zero-copy CPU-to-GPU handoffs.
+- **Schema Scale**: Up to 128 fields per schema (fully unrolled bit-plane transposition limits).
 
 ---
 

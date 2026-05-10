@@ -115,6 +115,14 @@ cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -G Ninja
 
+# macOS Specific Configurations (NATIVE Apple Silicon Build)
+# Mandated to avoid iceoryx ACL support issues and JNI JDK path blocks on macOS
+cmake -B build \
+    -DIOX_PLATFORM_FEATURE_ACL=OFF \
+    -DAPEX_BUILD_JAVA=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -G Ninja
+
 # Custom install prefix
 cmake -B build \
     -DCMAKE_INSTALL_PREFIX=/opt/aarchlogic \
