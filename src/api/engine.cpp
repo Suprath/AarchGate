@@ -582,6 +582,9 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
 
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
+#ifdef __APPLE__
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
             size_t start_block = (num_blocks / num_threads) * t;
             size_t end_block = (t == num_threads - 1) ? num_blocks : start_block + (num_blocks / num_threads);
             
@@ -589,6 +592,7 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
             if (posix_memalign((void**)&scratchpad, 64, 262144 * sizeof(uint64_t)) != 0) return;
             std::memset(scratchpad, 0, 262144 * sizeof(uint64_t));
             
+            uint64_t thread_matches = 0;
             for (size_t b = start_block; b < end_block; ++b) {
                 const uint64_t* block_base = bit_planes + (b * schema_num_fields * 64);
 
@@ -599,7 +603,7 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
 
                 if (logic.result_kind == ir::ResultKind::BITMASK) {
                     uint64_t mask = logic.kernel(kernel_ptrs, scratchpad);
-                    results[t] += static_cast<uint64_t>(__builtin_popcountll(mask));
+                    thread_matches += static_cast<uint64_t>(__builtin_popcountll(mask));
                 } else if (!logic.delta_weights.empty()) {
                     logic.kernel(kernel_ptrs, scratchpad);
                     int64_t chunk_sum = static_cast<int64_t>(logic.base_sum) * 64;
@@ -612,14 +616,15 @@ uint64_t ApexEngine::execute_native_parallel(std::string_view schema_name, const
                     for (; i < logic.delta_weights.size(); ++i) {
                         chunk_sum += __builtin_popcountll(scratchpad[logic.masks_to_popcount[i]]) * logic.delta_weights[i];
                     }
-                    results[t] += static_cast<uint64_t>(chunk_sum);
+                    thread_matches += static_cast<uint64_t>(chunk_sum);
                 } else {
                     logic.kernel(kernel_ptrs, scratchpad);
                     for (int i = 0; i < 64; ++i) {
-                        results[t] += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i]))) << i;
+                        thread_matches += (static_cast<uint64_t>(__builtin_popcountll(scratchpad[i]))) << i;
                     }
                 }
             }
+            results[t] = thread_matches;
             free(scratchpad);
         });
     }
