@@ -154,11 +154,14 @@ The core of AarchGate's efficiency lies in its ability to transform Row-oriented
 
 To perform this 90-degree rotation without the $O(N^2)$ cost of bit-by-bit manipulation, AarchGate implements the **Butterfly Network** algorithm as described by Knuth [#Knuth1968]. For a 64x64 matrix, the algorithm executes in exactly $log_2(64) = 6$ stages.
 
-Each stage $k$ (where $k$ goes from 5 down to 0) performs a bit-swap between two values separated by a distance of $2^k$. The logic for a single stage is defined by the bitwise swap identity:
-$$mask = ((A \gg d) \oplus B) \ \& \ m$$
-$$A = A \oplus (mask \ll d)$$
-$$B = B \oplus mask$$
-Where $d = 2^k$ is the stride and $m$ is a repeating bitmask of length $d$.
+Each stage $k$ (where $k$ goes from 5 down to 0) performs a bit-swap between two values separated by a distance of $d = 2^k$. The logic for a single stage is defined by the bitwise swap identity:
+
+```python
+# d = stride (2^k), m = repeating mask of length d
+mask = ((A >> d) ^ B) & m
+A ^= (mask << d)
+B ^= mask
+```
 
 ### 3.1.1 Vectorized Stages (5 through 1)
 Stages 5 (stride 32) down to 1 (stride 2) exhibit perfect data independence, allowing them to be fully vectorized using SIMD instructions. AarchGate utilizes **Google Highway** [#Highway2023] to target ARM64 NEON registers. By loading 128-bit or 256-bit blocks, AarchGate can execute the butterfly swaps across multiple rows simultaneously.
