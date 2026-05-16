@@ -519,6 +519,34 @@ graph TD
     style F fill:#bbf,stroke:#333
 ```
 *Figure 7b: AarchGate-ML Execution Pipeline*
+
+## 7.6 High-Fidelity Feature Translation
+
+A critical requirement for 100% parity with native XGBoost is the handling of floating-point feature values and negative thresholds. Standard bitwise comparisons (`A > B`) operate on magnitude. For positive floating-point numbers, the IEEE-754 bit representation is naturally monotonic, allowing AarchGate to compare them as if they were integers.
+
+However, for datasets containing negative values, AarchGate-ML implements **Inequality Invariant Translation**. For each feature $F$, the engine calculates a scaling bias $S$ such that $F + S \ge 0$ for all possible values. The JIT then evaluates the translated inequality:
+$$F < T \iff F + S < T + S$$
+This translation is performed in-flight during the Google Highway transposition pass, ensuring that the bit-sliced core always operates on positive, monotonic bit-planes without any runtime branching or expensive float-to-int conversions.
+
+## 7.7 Categorical Features and Bit-Masking
+
+While GBDTs primarily use continuous splits, categorical features are common in tabular data. AarchGate-ML handles categorical features by representing them as **Bit-Masked Indices**. For a categorical feature with $K$ possible values, the JIT emits a bitwise "In-Set" test:
+$$\text{IsMember} = (\text{FeatureMask} \ \& \ \text{CategoryBit}) \neq 0$$
+This allows the engine to evaluate multi-category "In" conditions in a single instruction, whereas traditional engines would require multiple branches or a hash-table lookup.
+
+## 7.8 The AarchGate-ML Python SDK
+
+To ensure that the performance of AarchGate-ML is accessible to data scientists, we provide a high-level Python SDK (`aarchgate-ml`). The SDK allows users to convert a trained XGBoost or LightGBM model into an AarchGate-accelerated engine with a single line of code:
+
+```python
+from aarchgate_ml import AarchGateClassifier
+# Convert native model to JIT-accelerated engine
+model = AarchGateClassifier.from_xgboost(native_xgb_model)
+# Predict at 61M rows/sec
+probs = model.predict_proba(X_test)
+```
+
+The SDK automatically manages the schema registration, feature name mapping, and the deployment of the JIT kernels, providing a "drop-in" replacement for standard Scikit-Learn classifiers while delivering an order-of-magnitude performance improvement.
 # 8. Demonstration II: AarchGate-Eureka
 
 The second validation domain is analytical query processing for schemaless NDJSON log data. Traditional log engines (e.g., Elasticsearch, Splunk) struggle with the "Parsing Tax"—the continuous overhead of string manipulation and JSON decoding during every query. **AarchGate-Eureka** solves this by pre-transposing logs into columnar bit-planes and using a deferred retrieval strategy.
