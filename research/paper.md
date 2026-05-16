@@ -558,9 +558,9 @@ xychart-beta
     title "Throughput Scaling (Rows/sec)"
     x-axis [10, 100, 1K, 10K, 100K, 1M, 10M, 100M]
     y-axis "Rows/sec (Millions)" 0 --> 10000
-    line [2.1, 2.1, 2.1, 2.1, 2.1, 2.1, 2.1, 2.1]
-    line [0.1, 3.8, 3.8, 3.8, 3.8, 3.8, 3.8, 3.8]
-    line [0, 0, 0, 0, 0.5, 2.1, 8.5, 10.2]
+    line [210, 210, 210, 210, 210, 210, 210, 210]
+    line [100, 3800, 3830, 3850, 3870, 3880, 3880, 3880]
+    line [0, 0, 0, 0, 500, 2100, 8500, 10200]
 ```
 *Figure 9: Throughput vs Batch Size (Scalar vs JIT vs GPU)*
 
