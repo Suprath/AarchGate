@@ -471,10 +471,18 @@ Where each $C_i$ is a 64-bit result mask from the JIT comparison kernel. Because
 The most significant implementation challenge in AarchGate-ML is the efficient accumulation of floating-point weights. In a forest of 100+ trees, summing the leaf weights for each row can become a serialization bottleneck. AarchGate-ML solves this using the **Weighted Popcount Algorithm**.
 
 Instead of iterating through the 64 bits of a result mask to add weights individually, the engine maintains a running prediction vector $V$ in SIMD registers. For each leaf weight $w_i$ and its corresponding mask $m_i$, the accumulation is conceptually:
-$$V[row] += w_i \text{ if } (m_i \& (1 \ll row))$$
+
+```python
+for row in range(64):
+    if (mask_i & (1 << row)):
+        predictions[row] += weight_i
+```
 
 To optimize this for ARM64, the JIT uses the **`CNT` (Popcount)** vector instruction. The engine calculates the "contribution" of each tree to the aggregate block sum using:
-$$\text{BlockSum} = \sum_{i=1}^{Trees} (\text{popcount}(m_i) \times w_i)$$
+
+```python
+block_sum = sum(popcount(mask_i) * weight_i for mask_i in tree_masks)
+```
 
 This allows AarchGate-ML to verify the aggregate forest contribution across 64 rows in a fraction of the time required for sequential row processing.
 
