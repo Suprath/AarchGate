@@ -632,15 +632,15 @@ This appendix details the experimental environment and measurement strategies us
 
 ## A.1 Hardware Specifications
 
-All experiments were performed on a dedicated Apple Mac Studio workstation to ensure thermal stability and consistent power delivery.
+All experiments were performed on a dedicated Apple MacBook Air (M3) to ensure thermal stability and consistent power delivery.
 
-*   **Processor**: Apple M3 Ultra
-    *   16 Performance Cores (P-Cores) @ 4.05 GHz
-    *   8 Efficiency Cores (E-Cores) @ 2.8 GHz
+*   **Processor**: Apple M3
+    *   4 Performance Cores (P-Cores) @ 4.05 GHz
+    *   4 Efficiency Cores (E-Cores) @ 2.8 GHz
     *   L1D Cache: 128 KB per P-Core
-    *   L2 Cache: 16 MB shared per cluster
-*   **Memory**: 128 GB LPDDR5x-6400 (Unified)
-    *   Peak Bandwidth: 800 GB/s
+    *   L2 Cache: 12 MB shared
+*   **Memory**: 16 GB LPDDR5-6400 (Unified)
+    *   Peak Bandwidth: 100 GB/s
 
 ## A.2 Software Environment
 
