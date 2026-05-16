@@ -549,6 +549,12 @@ probs = model.predict_proba(X_test)
 ```
 
 The SDK automatically manages the schema registration, feature name mapping, and the deployment of the JIT kernels, providing a "drop-in" replacement for standard Scikit-Learn classifiers while delivering an order-of-magnitude performance improvement.
+
+## 7.9 Register Scaling and AST Striding
+
+As the number of features in an ML model increases, the JIT compiler faces the physical constraint of the ARM64 register file (31 general-purpose registers). To prevent performance degradation from register spilling, AarchGate-ML implements **AST Striding.**
+
+When the active feature count exceeds the available register pool (typically $\approx 22$ after accounting for state and pointers), the JIT partitions the evaluation into multiple autonomous "Logic Strides." Each stride evaluates a subset of the trees and stores the intermediate result masks in the L1D-resident `ColumnBuffer`. This ensures that the engine can scale to models with thousands of features while maintaining the performance of register-local logic for the most frequent split conditions.
 # 8. Demonstration II: AarchGate-Eureka
 
 The second validation domain is analytical query processing for schemaless NDJSON log data. Traditional log engines (e.g., Elasticsearch, Splunk) struggle with the "Parsing Tax"—the continuous overhead of string manipulation and JSON decoding during every query. **AarchGate-Eureka** solves this by pre-transposing logs into columnar bit-planes and using a deferred retrieval strategy.
@@ -591,6 +597,12 @@ We evaluated AarchGate-Eureka against Elasticsearch (v8.x) on a 100 GB synthetic
 | Ingestion Rate | 300K events/s | **10M events/s** | **33.3x** |
 
 **Reconstruction Verification:** For a query returning 1,000 records from a 1,000,000 record set, Eureka completes the entire scan and raw retrieval process in **181 microseconds.** This confirms that the two-pass approach effectively hides the I/O cost of raw log retrieval behind the speed of the bit-sliced logical scan.
+
+## 8.4 Adaptive Bit-Plane Defaulting for Schema Drift
+
+In real-world log streams, fields frequently appear and disappear across different blocks (schema drift). AarchGate-Eureka handles this without re-compiling the JIT kernel through **Bit-Plane Defaulting.**
+
+During the ingestion of an `.agb` file, if a specific block of 64 records is missing a field required by the query, the engine dynamically injects a pointer to a pre-allocated **Static Zero-Plane** (a 64-byte block of all zeros). The JIT kernel evaluates this zero-plane as if the field were present but null. This architectural decoupling allows Eureka to maintain a single, highly-optimized machine code kernel for the entire scan, even when the underlying data is sparse or heterogeneous.
 
 ```mermaid
 sequenceDiagram
