@@ -56,7 +56,17 @@ uint64_t mask = apex_jit_compare_gt(bit_planes, 25000);
 
 As illustrated in Figure 1, AarchGate acts as a high-speed execution gate that bridges the gap between raw unstructured data and microarchitectural silicon limits.
 
-![Figure 1: High-Level AarchGate Architectural Flow](figures/arch_flow.png)
+```mermaid
+graph TD
+    A[AoS Data (Rows)] --> B[Bit-Slicer (Knuth Butterfly)]
+    B --> C[64 Bit-Planes]
+    C --> D[JIT Logic Kernel]
+    D --> E[64-bit Result Mask]
+    
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+```
+*Figure 1: High-Level AarchGate Architectural Flow*
 
 ## 1.4 Contributions
 
@@ -125,7 +135,17 @@ For a field with a known range $[min, max]$, AarchGate calculates a shift factor
 $$x > y \iff x + S > y + S$$
 This translation happens in-flight during the Google Highway transposition pass, costing effectively zero extra cycles.
 
-![Figure 2: Memory Ingestion and Alignment Pipeline](figures/memory_fabric.png)
+```mermaid
+graph TD
+    A[iceoryx Shared Memory] --> B[FlatBuffers Binary Layout]
+    B --> C[Page Alignment 4096B]
+    C --> D[Cache-Line Alignment 64B]
+    D --> E[AarchGate Bit-Slicer]
+    
+    style A fill:#dfd,stroke:#333
+    style E fill:#dff,stroke:#333
+```
+*Figure 2: Memory Ingestion and Alignment Pipeline*
 # 3. The Bit-Sliced Transposition Substrate
 
 The core of AarchGate's efficiency lies in its ability to transform Row-oriented data (Array-of-Structs) into Columnar Bit-Planes at near-cache speeds. This transformation, known as transposition, is mathematically equivalent to rotating a 64x64 bit matrix by 90 degrees.
@@ -184,7 +204,18 @@ The cycle budget breakdown is as follows:
 
 Given that each block contains 4,096 bits (64 rows * 64 bits), the aggregate transposition throughput is **51.2 Gigabits per second per core.** This allows AarchGate to stay ahead of the memory bus, ensuring that transposition is never the bottleneck.
 
-![Figure 3: 6-Stage Butterfly Network Swaps](figures/butterfly_logic.png)
+```mermaid
+graph LR
+    A[Row 0-31] -- Stride 32 --> B[Stage 5]
+    B -- Stride 16 --> C[Stage 4]
+    C -- Stride 8 --> D[Stage 3]
+    D -- Stride 4 --> E[Stage 2]
+    E -- Stride 2 --> F[Stage 1]
+    F -- Stride 1 --> G[Stage 0 Scalar]
+    
+    style G fill:#f96,stroke:#333
+```
+*Figure 3: 6-Stage Butterfly Network Swaps*
 # 4. JIT Compiler Architecture & Logic Synthesis
 
 AarchGate does not execute queries using a virtual machine or an interpreter. Instead, it utilizes **Just-In-Time (JIT) Compilation** to synthesize raw ARM64 machine code that represents the "logical circuit" of the query. By compiling dynamic expressions into static machine code at runtime, AarchGate eliminates the overhead of instruction fetching and branch-dependent interpretation [#Neumann2011].
@@ -206,12 +237,18 @@ To compare a bit-sliced field $A$ against a constant $K$, the JIT maintains two 
 *   `GT_mask` ($G$): Tracks rows where $A > K$ is definitely true.
 *   `EQ_mask` ($E$): Tracks rows where $A$ and $K$ are currently equal.
 
-Starting from the Most Significant Bit (bit 63) down to bit 0, for each bit $i$, the logic is:
-If $K_i = 0$:
-$$G = G \ | \ (E \ \& \ A_i)$$
-$$E = E \ \& \ (\sim A_i)$$
-If $K_i = 1$:
-$$E = E \ \& \ A_i$$
+Starting from the Most Significant Bit (bit 63) down to bit 0, for each bit $i$, the logic is defined as:
+
+**If $K_i = 0$:**
+```python
+GT_mask |= (EQ_mask & A_i)
+EQ_mask &= (~A_i)
+```
+
+**If $K_i = 1$:**
+```python
+EQ_mask &= A_i
+```
 
 By the end of 64 iterations, the `GT_mask` contains a `1` bit for every row that satisfied the condition. This entire process involves **zero branching.**
 
@@ -253,7 +290,16 @@ If a dataset only contains values up to $2^{16}$, processing all 64 bit-planes i
 
 Because the machine code is synthesized at runtime, C++ compilers and CPU out-of-order engines can sometimes incorrectly "memoize" or reorder execution. AarchGate uses **Volatile Function Pointers** and explicit `__asm__ volatile` memory barriers to ensure that every call to the JIT kernel is fresh and that the CPU does not skip the logical evaluation.
 
-![Figure 4: Ripple-Carry Logic Transition Diagram](figures/ripple_carry.png)
+```mermaid
+flowchart TD
+    A[Bit i] --> B{Ki == 0?}
+    B -- Yes --> C["GT |= (EQ & A_i)
+    EQ &= (~A_i)"]
+    B -- No --> D["EQ &= A_i"]
+    C --> E[Next Bit]
+    D --> E
+```
+*Figure 4: Ripple-Carry Logic Transition Diagram*
 # 5. Microarchitectural Mastery
 
 To achieve performance that matches the theoretical silicon ceiling, AarchGate must move beyond algorithmic efficiency and exercise total control over the microarchitectural state of the ARM64 processor. This section details the hardware-level optimizations that enable AarchGate to eliminate stalls and maximize Instruction-Level Parallelism (ILP).
@@ -309,7 +355,18 @@ To verify that AarchGate operates at the silicon limit, we perform a cycle-budge
 
 At 4.05 GHz, 74.5 cycles per block represents an execution time of **~18.4 nanoseconds.** This mathematically proves that AarchGate is capable of processing **3.47 Billion Rows/sec per core**, well within the physical limits of the ARMv8 instruction set.
 
-![Figure 5: ARM64 P-Core Execution Width and Cache Paths](figures/microarch_layout.png)
+```mermaid
+graph TD
+    subgraph Apple M3 P-Core
+    A[8-wide Issue Queue] <--> B[128KB L1D Cache]
+    A --> C[ALU Logic Units]
+    end
+    D[L2 Cache] <--> B
+    E[Unified Memory] <--> D
+    
+    style B fill:#fbb,stroke:#333
+```
+*Figure 5: ARM64 P-Core Execution Width and Cache Paths*
 # 6. GPGPU Accelerated Compute
 
 While the ARM64 CPU cores provide ultra-low latency for small-to-medium datasets, massive parallel throughput is best achieved through GPGPU acceleration. AarchGate exploits the **Unified Memory Architecture (UMA)** of Apple Silicon to bridge the CPU and GPU without the traditional "PCIe Tax" of memory copying.
@@ -357,7 +414,18 @@ The decision to dispatch to the GPU is governed by the **Throughput-to-Latency T
 
 In our benchmarks, the M3 GPU achieves a sustained throughput of over **10 Billion Records per second** for simple logic evaluation, effectively saturating the unified memory bandwidth of the SoC.
 
-![Figure 6: Kogge-Stone Parallel Carry Tree](figures/kogge_stone.png)
+```mermaid
+graph TD
+    subgraph Parallel Carry Scan
+    A[Bit i, i+1] --> B[G = g | p & g_prev]
+    B --> C[Jump 2]
+    C --> D[Jump 4]
+    D --> E[Jump 8]
+    E --> F[Jump 16]
+    F --> G[Final Carry]
+    end
+```
+*Figure 6: Kogge-Stone Parallel Carry Tree*
 # 7. Demonstration I: AarchGate-ML
 
 The first validation of the AarchGate primitive is in the domain of machine learning inference, specifically for **Gradient-Boosted Decision Trees (GBDTs).** Standard GBDT engines (e.g., XGBoost, LightGBM) process records by traversing trees node-by-node. On modern processors, this leads to significant performance degradation due to branch mispredictions as the data dictates the traversal path.
@@ -394,7 +462,21 @@ We evaluated AarchGate-ML against the native C++ XGBoost engine on an Apple M3 p
 
 The results demonstrate that by eliminating branches and utilizing bit-sliced logic, AarchGate-ML operates at a performance tier unreachable by traditional tree-traversal engines.
 
-![Figure 7: Decision Tree to Bit-Sliced Boolean Circuit](figures/tree_flattening.png)
+```mermaid
+graph TD
+    A[Root Node] --> B{F0 > 10.5}
+    B -- True --> C{F2 < 5.0}
+    B -- False --> D[Leaf 0]
+    C -- True --> E[Leaf 1]
+    C -- False --> F[Leaf 2]
+
+    subgraph AarchGate Circuit
+    G[Bit-Plane F0] -- JIT GT --> H[Mask A]
+    I[Bit-Plane F2] -- JIT LT --> J[Mask B]
+    H & J -- AND --> K[Path Mask]
+    end
+```
+*Figure 7: Decision Tree to Bit-Sliced Boolean Circuit*
 # 8. Demonstration II: AarchGate-Eureka
 
 The second validation domain is analytical query processing for schemaless NDJSON log data. Traditional log engines (e.g., Elasticsearch, Splunk) struggle with the "Parsing Tax"—the continuous overhead of string manipulation and JSON decoding during every query. **AarchGate-Eureka** solves this by pre-transposing logs into columnar bit-planes and using a deferred retrieval strategy.
@@ -438,7 +520,19 @@ We evaluated AarchGate-Eureka against Elasticsearch (v8.x) on a 100 GB synthetic
 
 **Reconstruction Verification:** For a query returning 1,000 records from a 1,000,000 record set, Eureka completes the entire scan and raw retrieval process in **181 microseconds.** This confirms that the two-pass approach effectively hides the I/O cost of raw log retrieval behind the speed of the bit-sliced logical scan.
 
-![Figure 8: Two-Pass Deferred Materialization Flow](figures/eureka_materialization.png)
+```mermaid
+sequenceDiagram
+    participant D as Disk (.agb + .idx)
+    participant C as CPU (JIT Logic)
+    participant R as RAM (Raw Logs)
+    
+    D->>C: Pass 1: Columnar Bit-Planes
+    C->>C: Evaluate 61 GB/s
+    C->>D: Pass 2: Matching Row IDs
+    D->>R: Direct Seek via .idx
+    R->>C: Materialize JSON
+```
+*Figure 8: Two-Pass Deferred Materialization Flow*
 # 9. Performance Evaluation
 
 In this section, we present a comprehensive performance evaluation of AarchGate across multiple hardware platforms and workloads. Our goal is to demonstrate that AarchGate consistently operates at the physical limits of modern ARM64 silicon.
@@ -459,7 +553,16 @@ Figure 9 illustrates the throughput of the AarchGate core engine as a function o
 2. **Bit-Sliced JIT Phase (64 to 1M rows)**: Throughput scales linearly as the bit-slicer and JIT kernel saturate the L1 and L2 caches. Peak throughput reaches **3.8 Billion rows/sec per core.**
 3. **GPU Acceleration Phase (> 10M rows)**: Upon dispatching to the Metal GPU, the engine achieves a massive throughput of **10.2 Billion rows/sec**, limited only by the unified memory bus.
 
-![Figure 9: Throughput vs Batch Size across Execution Modes](figures/throughput_scaling.png)
+```mermaid
+xychart-beta
+    title "Throughput Scaling (Rows/sec)"
+    x-axis [10, 100, 1K, 10K, 100K, 1M, 10M, 100M]
+    y-axis "Rows/sec (Millions)" 0 --> 10000
+    line [2.1, 2.1, 2.1, 2.1, 2.1, 2.1, 2.1, 2.1]
+    line [0.1, 3.8, 3.8, 3.8, 3.8, 3.8, 3.8, 3.8]
+    line [0, 0, 0, 0, 0.5, 2.1, 8.5, 10.2]
+```
+*Figure 9: Throughput vs Batch Size (Scalar vs JIT vs GPU)*
 
 ## 9.3 The Silicon Limit Proof
 
@@ -483,7 +586,12 @@ A significant advantage of bit-sliced branchless execution is its deterministic 
 
 AarchGate achieves a **110x improvement in energy efficiency** compared to traditional row-oriented inference, making it an ideal candidate for large-scale data center deployments and edge computing on ARM64.
 
-![Figure 10: Energy Efficiency Comparison](figures/energy_efficiency.png)
+```mermaid
+pie title Energy Efficiency (nJ per Row)
+    "Native XGBoost (21,428 nJ)" : 21428
+    "AarchGate-ML (195 nJ)" : 195
+```
+*Figure 10: Energy Efficiency Comparison*
 # 10. Related Work
 
 The development of AarchGate builds upon several decades of research in vectorized query execution, bit-sliced indexing, and JIT compilation.
