@@ -1,6 +1,0 @@
-Starting Slicer Benchmark (10000000 iterations)...
---- Results ---
-Total Time      : 0.603714 s
-Avg Latency     : 60.37 ns/block
-Throughput      : 16.56 M blocks/sec
-Rows per second : 1060.11 M rows/sec

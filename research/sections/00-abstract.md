@@ -1,9 +1,0 @@
-# Abstract
-
-Modern ARM64 architectures, such as Apple Silicon and AWS Graviton, offer unprecedented execution width and memory bandwidth. However, traditional analytical data processing engines and machine learning inference frameworks remain bottlenecked by the "Transcoding Tax" (data movement across cache lines) and the "Branching Tax" (pipeline stalls from unpredictable predicates). In this paper, we present **AarchGate**, a domain-general runtime execution primitive designed to eliminate these bottlenecks by synthesizing software-defined hardware logic on bit-planes. 
-
-AarchGate fundamentally transforms the execution paradigm from instruction-driven row processing to circuit-driven bitwise evaluation. At its core, AarchGate pairs an L1D-cache-aligned zero-copy memory fabric with a high-throughput transposition substrate powered by a 6-stage Knuth butterfly network. At runtime, dynamic Abstract Syntax Trees (ASTs) are compiled via JIT into branchless ripple-carry logic circuits operating directly on transposed bit-planes. 
-
-We evaluate AarchGate across two diverse domains: Gradient-Boosted Decision Tree (GBDT) inference and schemaless log analytics. Our evaluation on Apple Silicon M3 shows that AarchGate achieves a record-breaking **10 Billion Rows/sec** throughput for logic evaluation and **207 Million rows/sec** for end-to-end ML inference—representing an 11.2x to 29.2x speedup over state-of-the-art baselines. Furthermore, AarchGate-Eureka demonstrates log scanning speeds of **61 GB/s**, saturating the physical memory bus. By operating at the microarchitectural silicon limit, AarchGate establishes a new performance ceiling for domain-general data processing on modern ARM64 systems.
-
-**Keywords:** ARM64, Bit-Slicing, JIT Compilation, SIMD, Data Processing, ML Inference, High-Throughput Systems.
