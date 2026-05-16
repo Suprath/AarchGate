@@ -58,10 +58,10 @@ As illustrated in Figure 1, AarchGate acts as a high-speed execution gate that b
 
 ```mermaid
 graph TD
-    A[AoS Data (Rows)] --> B[Bit-Slicer (Knuth Butterfly)]
-    B --> C[64 Bit-Planes]
-    C --> D[JIT Logic Kernel]
-    D --> E[64-bit Result Mask]
+    A["AoS Data (Rows)"] --> B["Bit-Slicer (Knuth Butterfly)"]
+    B --> C["64 Bit-Planes"]
+    C --> D["JIT Logic Kernel"]
+    D --> E["64-bit Result Mask"]
     
     style B fill:#f9f,stroke:#333,stroke-width:2px
     style D fill:#bbf,stroke:#333,stroke-width:2px
@@ -137,10 +137,10 @@ This translation happens in-flight during the Google Highway transposition pass,
 
 ```mermaid
 graph TD
-    A[iceoryx Shared Memory] --> B[FlatBuffers Binary Layout]
-    B --> C[Page Alignment 4096B]
-    C --> D[Cache-Line Alignment 64B]
-    D --> E[AarchGate Bit-Slicer]
+    A["iceoryx Shared Memory"] --> B["FlatBuffers Binary Layout"]
+    B --> C["Page Alignment 4096B"]
+    C --> D["Cache-Line Alignment 64B"]
+    D --> E["AarchGate Bit-Slicer"]
     
     style A fill:#dfd,stroke:#333
     style E fill:#dff,stroke:#333
@@ -206,12 +206,12 @@ Given that each block contains 4,096 bits (64 rows * 64 bits), the aggregate tra
 
 ```mermaid
 graph LR
-    A[Row 0-31] -- Stride 32 --> B[Stage 5]
-    B -- Stride 16 --> C[Stage 4]
-    C -- Stride 8 --> D[Stage 3]
-    D -- Stride 4 --> E[Stage 2]
-    E -- Stride 2 --> F[Stage 1]
-    F -- Stride 1 --> G[Stage 0 Scalar]
+    A["Row 0-31"] -- "Stride 32" --> B["Stage 5"]
+    B -- "Stride 16" --> C["Stage 4"]
+    C -- "Stride 8" --> D["Stage 3"]
+    D -- "Stride 4" --> E["Stage 2"]
+    E -- "Stride 2" --> F["Stage 1"]
+    F -- "Stride 1" --> G["Stage 0 Scalar"]
     
     style G fill:#f96,stroke:#333
 ```
@@ -292,11 +292,10 @@ Because the machine code is synthesized at runtime, C++ compilers and CPU out-of
 
 ```mermaid
 flowchart TD
-    A[Bit i] --> B{Ki == 0?}
-    B -- Yes --> C["GT |= (EQ & A_i)
-    EQ &= (~A_i)"]
+    A["Bit i"] --> B{"Ki == 0?"}
+    B -- Yes --> C["GT |= (EQ & A_i)\nEQ &= (~A_i)"]
     B -- No --> D["EQ &= A_i"]
-    C --> E[Next Bit]
+    C --> E["Next Bit"]
     D --> E
 ```
 *Figure 4: Ripple-Carry Logic Transition Diagram*
@@ -357,12 +356,12 @@ At 4.05 GHz, 74.5 cycles per block represents an execution time of **~18.4 nanos
 
 ```mermaid
 graph TD
-    subgraph Apple M3 P-Core
-    A[8-wide Issue Queue] <--> B[128KB L1D Cache]
-    A --> C[ALU Logic Units]
+    subgraph "Apple M3 P-Core"
+    A["8-wide Issue Queue"] <--> B["128KB L1D Cache"]
+    A --> C["ALU Logic Units"]
     end
-    D[L2 Cache] <--> B
-    E[Unified Memory] <--> D
+    D["L2 Cache"] <--> B
+    E["Unified Memory"] <--> D
     
     style B fill:#fbb,stroke:#333
 ```
@@ -416,13 +415,13 @@ In our benchmarks, the M3 GPU achieves a sustained throughput of over **10 Billi
 
 ```mermaid
 graph TD
-    subgraph Parallel Carry Scan
-    A[Bit i, i+1] --> B[G = g | p & g_prev]
-    B --> C[Jump 2]
-    C --> D[Jump 4]
-    D --> E[Jump 8]
-    E --> F[Jump 16]
-    F --> G[Final Carry]
+    subgraph "Parallel Carry Scan"
+    A["Bit i, i+1"] --> B["G = g | p & g_prev"]
+    B --> C["Jump 2"]
+    C --> D["Jump 4"]
+    D --> E["Jump 8"]
+    E --> F["Jump 16"]
+    F --> G["Final Carry"]
     end
 ```
 *Figure 6: Kogge-Stone Parallel Carry Tree*
@@ -464,16 +463,16 @@ The results demonstrate that by eliminating branches and utilizing bit-sliced lo
 
 ```mermaid
 graph TD
-    A[Root Node] --> B{F0 > 10.5}
-    B -- True --> C{F2 < 5.0}
-    B -- False --> D[Leaf 0]
-    C -- True --> E[Leaf 1]
-    C -- False --> F[Leaf 2]
+    A["Root Node"] --> B{"F0 > 10.5"}
+    B -- True --> C{"F2 < 5.0"}
+    B -- False --> D["Leaf 0"]
+    C -- True --> E["Leaf 1"]
+    C -- False --> F["Leaf 2"]
 
-    subgraph AarchGate Circuit
-    G[Bit-Plane F0] -- JIT GT --> H[Mask A]
-    I[Bit-Plane F2] -- JIT LT --> J[Mask B]
-    H & J -- AND --> K[Path Mask]
+    subgraph "AarchGate Circuit"
+    G["Bit-Plane F0"] -- "JIT GT" --> H["Mask A"]
+    I["Bit-Plane F2"] -- "JIT LT" --> J["Mask B"]
+    H & J -- "AND" --> K["Path Mask"]
     end
 ```
 *Figure 7: Decision Tree to Bit-Sliced Boolean Circuit*
@@ -522,15 +521,15 @@ We evaluated AarchGate-Eureka against Elasticsearch (v8.x) on a 100 GB synthetic
 
 ```mermaid
 sequenceDiagram
-    participant D as Disk (.agb + .idx)
-    participant C as CPU (JIT Logic)
-    participant R as RAM (Raw Logs)
+    participant D as "Disk (.agb + .idx)"
+    participant C as "CPU (JIT Logic)"
+    participant R as "RAM (Raw Logs)"
     
-    D->>C: Pass 1: Columnar Bit-Planes
-    C->>C: Evaluate 61 GB/s
-    C->>D: Pass 2: Matching Row IDs
-    D->>R: Direct Seek via .idx
-    R->>C: Materialize JSON
+    D->>C: "Pass 1: Columnar Bit-Planes"
+    C->>C: "Evaluate 61 GB/s"
+    C->>D: "Pass 2: Matching Row IDs"
+    D->>R: "Direct Seek via .idx"
+    R->>C: "Materialize JSON"
 ```
 *Figure 8: Two-Pass Deferred Materialization Flow*
 # 9. Performance Evaluation
