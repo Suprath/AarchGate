@@ -17,7 +17,7 @@ Modern ARM64 architectures, such as Apple Silicon and AWS Graviton, offer unprec
 
 AarchGate fundamentally transforms the execution paradigm from instruction-driven row processing to circuit-driven bitwise evaluation. At its core, AarchGate pairs an L1D-cache-aligned zero-copy memory fabric with a high-throughput transposition substrate powered by a 6-stage Knuth butterfly network. At runtime, dynamic Abstract Syntax Trees (ASTs) are compiled via JIT into branchless ripple-carry logic circuits operating directly on transposed bit-planes. 
 
-We evaluate AarchGate across two diverse domains: Gradient-Boosted Decision Tree (GBDT) inference and schemaless log analytics. Our evaluation on Apple Silicon M3 shows that AarchGate achieves a record-breaking **10 Billion Rows/sec** throughput for logic evaluation and **207 Million rows/sec** for end-to-end ML inference—representing an 11.2x to 29.2x speedup over state-of-the-art baselines. Furthermore, AarchGate-Eureka demonstrates log scanning speeds of **61 GB/s**, saturating the physical memory bus. By operating at the microarchitectural silicon limit, AarchGate establishes a new performance ceiling for domain-general data processing on modern ARM64 systems.
+We evaluate AarchGate across two diverse domains: Gradient-Boosted Decision Tree (GBDT) inference and schemaless log analytics. Our evaluation on Apple Silicon M3 shows that AarchGate achieves a record-breaking **3.8 Billion Rows/sec** throughput for logic evaluation and **61.3 Million rows/sec** for end-to-end ML inference—representing an 11.2x to 29.2x speedup over state-of-the-art baselines. Furthermore, AarchGate-Eureka demonstrates log scanning speeds of **61 GB/s**, saturating the physical memory bus. By operating at the microarchitectural silicon limit, AarchGate establishes a new performance ceiling for domain-general data processing on modern ARM64 systems.
 
 **Keywords:** ARM64, Bit-Slicing, JIT Compilation, SIMD, Data Processing, ML Inference, High-Throughput Systems.
 
@@ -193,7 +193,7 @@ for (int i = 0; i < 64; i += 2) {
 
 While the 6-stage butterfly is mathematically complete, naive application across a large memory buffer results in poor cache performance due to strided memory access. AarchGate optimizes this by using **Tiled Interleaving.** 
 
-The engine breaks the dataset into 8x8 "tiles." Within each tile, it performing a local transpose before interleaving the results into the larger 64-row bit-planes. This ensures that every bit of data loaded into the CPU's registers is used for multiple operations before being evicted, maximizing **Temporal Locality.**
+The engine breaks the dataset into 8x8 "tiles." Within each tile, it performs a local transpose before interleaving the results into the larger 64-row bit-planes. This ensures that every bit of data loaded into the CPU's registers is used for multiple operations before being evicted, maximizing **Temporal Locality.**
 
 ## 3.3 Latency and Throughput Analysis
 
@@ -427,7 +427,9 @@ graph TD
     F --> G["Final Carry"]
     end
 ```
-*Figure 6: Kogge-Stone Parallel Carry # 7. Demonstration I: AarchGate-ML
+*Figure 6: Kogge-Stone Parallel Carry Tree*
+
+# 7. Demonstration I: AarchGate-ML
 
 The first validation of the AarchGate primitive is in the domain of machine learning inference, specifically for **Gradient-Boosted Decision Trees (GBDTs).** While GBDTs like XGBoost and LightGBM are the industry standard for tabular data, their inference performance is fundamentally limited by the **Branching Tax**. Standard traversal engines evaluate records row-by-row, following a conditional path from the root to a leaf. Because real-world data is often highly entropic, the CPU branch predictor fails frequently, leading to massive pipeline stalls.
 
@@ -504,7 +506,7 @@ The effectiveness of this approach is validated by hardware performance counters
 | Branch Stalls (cycles) | 1,420M | **0** |
 | Peak Throughput (Rows/s) | 2.1M | **61.3M** |
 
-This represent a **29.2x speedup** over native XGBoost, proving that by rethinking the inference model as a bit-sliced circuit, we can bypass the fundamental limits of traditional CPU branch prediction.
+This represents a **29.2x speedup** over native XGBoost, proving that by rethinking the inference model as a bit-sliced circuit, we can bypass the fundamental limits of traditional CPU branch prediction.
 
 ```mermaid
 graph TD
@@ -689,7 +691,7 @@ In the ML domain, **Apache TVM** [#Chen2018] and **TensorRT** focus on optimizin
 
 AarchGate represents a fundamental advancement in the design of high-throughput execution engines for ARM64 architectures. By transforming row-oriented data into parallel bit-planes and synthesizing branchless, ripple-carry machine code, AarchGate eliminates the transcoding and branching taxes that bottleneck traditional systems.
 
-Our evaluation has shown that AarchGate consistently operates at the physical limits of the silicon, achieving record-breaking performance in both machine learning inference (**207M rows/s**) and log analytics (**61 GB/s**). Furthermore, the deterministic nature of bit-sliced execution provides a 110x improvement in energy efficiency compared to traditional branch-heavy engines.
+Our evaluation has shown that AarchGate consistently operates at the physical limits of the silicon, achieving record-breaking performance in both machine learning inference (**61.3M rows/s**) and log analytics (**61 GB/s**). Furthermore, the deterministic nature of bit-sliced execution provides a 110x improvement in energy efficiency compared to traditional branch-heavy engines.
 
 As ARM64 continues to dominate the data center and edge computing landscapes, execution primitives like AarchGate will be essential for managing the ever-increasing volume of global data. Future work will explore the integration of **SVE2 (Scalable Vector Extensions)** for wider logic gates and the expansion of the bit-sliced model to complex join operations and multi-dimensional spatial queries.
 
@@ -800,7 +802,7 @@ We utilize the following latency and throughput characteristics for the Apple M3
 
 | Instruction | Latency (Cycles) | Throughput (per Cycle) |
 | :--- | :---: | :---: |
-| `LDR` (L1 Cache) | 3 | 2 |
+| `LDR` (L1 Cache) | 3 | 3 |
 | `AND` / `ORR` / `BIC` | 1 | 4 |
 | `SUBS` / `ADD` | 1 | 4 |
 | `B.NE` (Correctly Predicted) | 1 | 2 |
