@@ -542,9 +542,10 @@ In this section, we present a comprehensive performance evaluation of AarchGate 
 ## 9.1 Experimental Setup
 
 All benchmarks were executed on the following hardware platform:
-*   **System**: Apple Mac Studio (M3 Ultra)
-*   **CPU**: 24-core (16 Performance, 8 Efficiency) @ 4.05 GHz
-*   **Memory**: 128 GB Unified Memory (800 GB/s bandwidth)
+*   **System**: Apple MacBook Air (M3)
+*   **CPU**: 8-core (4 Performance, 4 Efficiency) @ 4.05 GHz
+*   **GPU**: 10-core variant
+*   **Memory**: 16 GB Unified Memory (100 GB/s bandwidth)
 *   **OS**: macOS Sonoma 14.x
 *   **Compiler**: Clang 15.0.0 (`-O3 -ffast-math -mcpu=apple-m3`)
 
