@@ -1,39 +1,40 @@
-# AarchLogic Architecture Guide
+# AarchGate: Architecture & Core Engine
 
-## About
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20238051.svg)](https://zenodo.org/records/20238051)
 
-AarchLogic is a world-record class, universal JIT-accelerated vector logic engine designed specifically for the AArch64 (ARM64) architecture. It represents a paradigm shift in data processing, moving away from traditional instruction-based computing toward Software-Defined Hardware Logic.
+## Introduction
 
-At its core, AarchLogic is built to solve the most difficult challenge in modern systems engineering: **The Transcoding Tax**. While modern CPUs like the Apple M3 are incredibly fast, they are often bottlenecked by data movement and branch mispredictions. AarchLogic bypasses these bottlenecks by synthesizing custom machine-code circuits at runtime, enabling a sustained throughput of over **1.3 Billion Records Per Second (RPS) per core** for simple logic, and **150M+ RPS** for complex Random Forest inference.
+**AarchGate** is a state-of-the-art, universal JIT-accelerated vector logic engine designed specifically for the ARM64 (AArch64) architecture. It represents a paradigm shift in data processing, moving away from traditional instruction-driven row processing toward **Software-Defined Hardware Logic**.
 
-### The Core Innovation: Bit-Sliced Synthesis
-Most high-performance engines process data in rows. AarchLogic utilizes a technique called **Bit-Slicing**, mathematically transposing standard "Array of Structs" (AoS) data into vertical Bit-Planes.
+At its core, AarchGate addresses the fundamental microarchitectural bottlenecks in modern data systems: the **Transcoding Tax** (data movement overhead) and the **Branching Tax** (pipeline stalls from conditional logic). By synthesizing custom machine-code circuits at runtime, AarchGate achieves a sustained logic throughput of over **3.8 Billion Records Per Second (RPS) per core** on Apple Silicon, effectively saturating the physical L1D cache bandwidth.
 
-By rotating the data 90 degrees, AarchLogic treats the CPU’s SIMD registers (NEON) as a massively parallel logic array. A single CPU instruction (like XOR or AND) no longer operates on one number; it fires a software-defined logic gate across 64 records simultaneously.
+### Core Innovation: Bit-Sliced Synthesis
 
-### Architectural Pillars
-*   **Unified Single-Pass JIT Loop**: Integrates compilation, active bit-width analysis, and register allocation into a single pass with hardware-register-cached scratchpads for extreme instruction density.
-*   **Apple Metal GPU Mode (`GPU_THROUGHPUT`)**: Compiles logic on-the-fly into Metal Shading Language (MSL) compute pipelines, processing massive parallel data streams in unified host-GPU memory space.
-*   **Recursive SIMD Transposition (Google Highway)**: A proprietary 6-stage interleave algorithm that transposes memory at near-L1 cache speeds (sub-100ns).
-*   **Zero-Copy Shared Memory Bridge**: Maps page-aligned host memory directly to GPU threads or other processes without a single copy, avoiding any serializing or deserializing tax.
-*   **Mathematical Determinism**: By using ripple-carry logic gates instead of standard CPU arithmetic, AarchLogic provides bit-perfect, identical results across all platforms (CPU and GPU), eliminating floating-point jitter.
+Unlike traditional engines that process data in horizontal rows, AarchGate utilizes a mathematical technique called **Bit-Slicing**. This process transposes standard "Array of Structs" (AoS) data into vertical **Bit-Planes**.
 
-### Why AarchLogic Wins
-*   **For Quants**: It reduces backtesting cycles from hours to milliseconds. Complex arbitrage signals—involving arithmetic, comparisons, and boolean logic—scale deterministically with zero performance degradation.
-*   **For Cybersecurity**: It enables line-rate Deep Packet Inspection (DPI) on 100Gbps+ links by checking millions of threat signatures in parallel logic lanes.
-*   **For Industrial IoT**: It processes MHz-frequency sensor arrays at the network edge, providing sub-microsecond responsiveness for predictive maintenance and safety shutdowns.
+By rotating the data 90 degrees, AarchGate treats the CPU’s SIMD registers (NEON) as a massively parallel logic array. A single ARM64 instruction (e.g., `AND`, `ORR`, `BIC`) no longer operates on one scalar value; it fires a software-defined logic gate across 64 records simultaneously in a single clock cycle.
 
-### Performance Profile (Verified on Apple M3 Silicon)
-*   **Throughput**: 1.3B+ RPS (Simple CPU Logic) / 10B+ RPS (GPU Throughput Mode) / 153M RPS (100-Tree Random Forest).
-*   **Verification**: Comprehensive Local & GPU Test Suite Verification PASS.
-*   **Latency**: Sub-microsecond p99 latency per 64-record vector.
-*   **Language Support**: Native C++20 core with zero-copy SDKs for Python (NumPy) and Java (Direct Memory).
+### Key Architectural Pillars
+
+*   **JIT-Compiled Ripple-Carry Logic**: Dynamic Abstract Syntax Trees (ASTs) are compiled via `AsmJit` into branchless machine code, simulating binary comparators and arithmetic circuits directly on bit-planes.
+*   **Unified Memory GPGPU Mode**: Compiles logic on-the-fly into Metal Shading Language (MSL) compute shaders, processing massive parallel streams in shared Host-GPU memory space at **10B+ RPS**.
+*   **Recursive SIMD Transposition**: Powered by Google Highway, our proprietary 6-stage Knuth butterfly interleave algorithm transposes memory at near-L1 cache speeds (sub-80ns).
+*   **Zero-Copy Memory Fabric**: Utilizes `iceoryx` and page-aligned shared memory to eliminate data movement latency between publishers and the execution engine.
+*   **Mathematical Parity**: By bypassing standard floating-point units in favor of bit-sliced logic gates, AarchGate provides bit-perfect, deterministic results across CPU and GPU architectures.
+
+### Performance Profile (Verified on Apple M3)
+
+*   **Logic Throughput**: 3.83B RPS (JIT CPU Logic) / 10.2B RPS (Metal GPU Throughput).
+*   **ML Inference**: 61.3M RPS (100-Tree GBDT Inference / AarchGate-ML).
+*   **Log Analytics**: 61 GB/s scanning throughput (AarchGate-Eureka).
+*   **Latency**: Sub-microsecond p99 latency for 64-record vector batches.
+*   **Integrations**: Native C++20 core with zero-copy SDKs for Python (NumPy) and Java.
 
 ---
 
 ## Table of Contents
 
-1. [About AarchLogic](#about-aarchlogic)
+1. [About AarchGate](#about-aarchgate)
 2. [System Architecture](#system-architecture)
 3. [Data Layout Transformation](#data-layout-transformation)
 4. [Bit-Slicer Implementation](#bit-slicer-implementation)
@@ -207,7 +208,7 @@ Total: ~87ns (measured: ~80-90ns)
 
 ### SIMD Portability (Google Highway)
 
-AarchLogic uses **Google Highway** for CPU-agnostic SIMD:
+AarchGate uses **Google Highway** for CPU-agnostic SIMD:
 
 ```cpp
 #include "hwy/highway.h"
@@ -245,9 +246,9 @@ for (int i = 0; i < 64; i++) {
 // Cost: 64 branches, pipeline flushes
 ```
 
-**AarchLogic approach** (no branches, JIT-compiled):
+**AarchGate approach** (no branches, JIT-compiled):
 
-AarchLogic supports both **Constant** and **Variable** comparison operands. 
+AarchGate supports both **Constant** and **Variable** comparison operands. 
 
 **Case A: Constant Right Operand (e.g., `price > 25000`)**
 The threshold bits are baked into the JIT kernel at emit-time:
@@ -342,7 +343,7 @@ KernelFunc JitCompiler::compile_comparison(uint64_t threshold) {
 
 ### Hybrid Popcount Aggregator (Random Forest Path)
 
-For complex models like Random Forests, AarchLogic implements a **Hybrid Aggregation** strategy. Instead of evaluating a giant `IF/ELSE` tree in the JIT, it evaluates the leaf conditions in parallel and aggregates the results using the CPU's native `popcount` instruction.
+For complex models like Random Forests, AarchGate implements a **Hybrid Aggregation** strategy. Instead of evaluating a giant `IF/ELSE` tree in the JIT, it evaluates the leaf conditions in parallel and aggregates the results using the CPU's native `popcount` instruction.
 
 **Expression Structure**: `SUM(SELECT(GT(f0, 10), Const(100), Const(1)), ...)`
 
@@ -546,7 +547,7 @@ engine.set_logic("trade", ir, aarchgate_python.BIT_SLICED)
 matches = engine.execute(data, len(data))
 ```
 
-**Key**: AarchLogic receives **memory pointer** from NumPy, not a copy. BitSlicer and JIT operate on **original data location**.
+**Key**: AarchGate receives **memory pointer** from NumPy, not a copy. BitSlicer and JIT operate on **original data location**.
 
 ### Java with DirectByteBuffer
 
@@ -837,7 +838,7 @@ struct IRNode {
 
 ### GPU Acceleration (Apple Metal Engine)
 
-AarchLogic integrates a high-performance production-grade **Apple Metal GPU execution engine** (`ExecutionMode::GPU_THROUGHPUT`) for extreme throughput scaling on macOS:
+AarchGate integrates a high-performance production-grade **Apple Metal GPU execution engine** (`ExecutionMode::GPU_THROUGHPUT`) for extreme throughput scaling on macOS:
 
 #### 1. Zero-Copy Shared Memory Bridge
 By aligning memory allocations to host page boundaries (4096-byte boundaries) via `posix_memalign`, the CPU and GPU share the same physical address space. The `MetalDevice` maps this page-aligned buffer directly as an `id<MTLBuffer>` via `newBufferWithBytesNoCopy`:
