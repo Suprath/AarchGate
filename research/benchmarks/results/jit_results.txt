@@ -1,0 +1,12 @@
+Running Scalar Baseline...
+Running AarchGate JIT (Pre-sliced)...
+DEBUG: threshold = 25000 (0x61a8)
+Threshold bits: 0000000 00000000 00000000 00000000 00000000 00000000 00110000 11010100 0
+
+Branch 0 (threshold_bit==0) count: 58
+Branch 1 (threshold_bit==1) count: 6
+
+--- Results ---
+Scalar Time : 0 s (inf M rows/s)
+JIT Time    : 0.0334165 s (3830.44 M rows/s)
+Speedup     : 0x
