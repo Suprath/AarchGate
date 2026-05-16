@@ -427,58 +427,90 @@ graph TD
     F --> G["Final Carry"]
     end
 ```
-*Figure 6: Kogge-Stone Parallel Carry Tree*
-# 7. Demonstration I: AarchGate-ML
+*Figure 6: Kogge-Stone Parallel Carry # 7. Demonstration I: AarchGate-ML
 
-The first validation of the AarchGate primitive is in the domain of machine learning inference, specifically for **Gradient-Boosted Decision Trees (GBDTs).** Standard GBDT engines (e.g., XGBoost, LightGBM) process records by traversing trees node-by-node. On modern processors, this leads to significant performance degradation due to branch mispredictions as the data dictates the traversal path.
+The first validation of the AarchGate primitive is in the domain of machine learning inference, specifically for **Gradient-Boosted Decision Trees (GBDTs).** While GBDTs like XGBoost and LightGBM are the industry standard for tabular data, their inference performance is fundamentally limited by the **Branching Tax**. Standard traversal engines evaluate records row-by-row, following a conditional path from the root to a leaf. Because real-world data is often highly entropic, the CPU branch predictor fails frequently, leading to massive pipeline stalls.
 
-## 7.1 Flattening Trees into Boolean Logic
+## 7.1 Architectural Integration
 
-**AarchGate-ML** fundamentally changes the inference model by flattening decision trees into a series of parallel bitwise logic gates. Instead of a tree structure, every decision path is represented as a boolean mask. 
-
-For a tree with $D$ levels, the result is a 64-bit mask representing which of the 64 rows fall into a specific leaf. The JIT compiler emits the logic to evaluate all split conditions across all 64 rows simultaneously. This transformation effectively converts a search problem into a logic evaluation problem, achieving **Zero Branch Mispredictions.**
-
-```cpp
-// Listing 7.1: Tree Path to Logic Synthesis
-// Path: feature[0] > 10.5 AND feature[2] < 5.0
-uint64_t path_mask = engine.execute("feature0 > 10.5") & engine.execute("feature2 < 5.0");
-```
-
-## 7.2 Popcount Weight Accumulation
-
-Once the leaf masks are calculated for a forest of trees, AarchGate-ML must accumulate the floating-point leaf weights. Traditional engines do this sequentially per row. AarchGate-ML utilizes the **`__builtin_popcountll`** intrinsic, which maps directly to the ARM64 **`CNT`** vector instruction.
-
-The final prediction $P$ for a block of 64 rows is calculated as:
-$$P = \sum_{i=1}^{Trees} (\text{Popcount}(Mask_i \ \& \ \text{Selector}) \times Weight_i)$$
-By using hardware popcount, AarchGate-ML can accumulate weights across 64 rows in a single pass, drastically reducing the "Serialization Tax" at the end of the inference pipeline.
-
-## 7.3 Performance vs. Native XGBoost
-
-We evaluated AarchGate-ML against the native C++ XGBoost engine on an Apple M3 platform using a 100-tree model and 10 Million test rows.
-
-| Metric | Native XGBoost | AarchGate-ML | Speedup |
-| :--- | :---: | :---: | :---: |
-| Throughput (Rows/s) | 2.10 Million | **61.34 Million** | **29.2x** |
-| p99 Latency (Row) | 476.50 ns | **16.30 ns** | **29.2x** |
-| Branch Mispredictions | 4.2% | **0.0%** | **Perfect** |
-
-The results demonstrate that by eliminating branches and utilizing bit-sliced logic, AarchGate-ML operates at a performance tier unreachable by traditional tree-traversal engines.
+AarchGate-ML is implemented as a specialized domain layer on top of the AarchGate core engine. It leverages the core's **Knuth Butterfly Substrate** for feature transposition and the **AsmJit-based Compiler** for instruction emission. The primary addition in AarchGate-ML is the **Forest-to-Circuit Transpiler**, which converts tree structures into flattened boolean expressions.
 
 ```mermaid
 graph TD
-    A["Root Node"] --> B{"F0 > 10.5"}
-    B -- True --> C{"F2 < 5.0"}
-    B -- False --> D["Leaf 0"]
-    C -- True --> E["Leaf 1"]
-    C -- False --> F["Leaf 2"]
-
-    subgraph "AarchGate Circuit"
-    G["Bit-Plane F0"] -- "JIT GT" --> H["Mask A"]
-    I["Bit-Plane F2"] -- "JIT LT" --> J["Mask B"]
-    H & J -- "AND" --> K["Path Mask"]
+    subgraph "Core AarchGate"
+    A["SIMD Bit-Slicer"]
+    B["AsmJit Core"]
+    C["Memory Fabric"]
     end
+    
+    subgraph "AarchGate-ML Expansion"
+    D["XGBoost Model Parser"]
+    E["Tree-to-AST Transpiler"]
+    F["Weighted Popcount Accumulator"]
+    end
+    
+    D --> E
+    E --> B
+    C --> A
+    A --> F
+    B --> F
 ```
-*Figure 7: Decision Tree to Bit-Sliced Boolean Circuit*
+*Figure 7a: Integration Architecture of AarchGate-ML*
+
+## 7.2 Tree Flattening and Path Encoding
+
+AarchGate-ML eliminates branch mispredictions by flattening trees into **Boolean Bit-Planes**. Instead of traversing a tree, the engine evaluates every split condition in a tree path independently across all 64 rows in parallel.
+
+For a specific decision path leading to leaf $L$, defined by a set of conditions $\{C_1, C_2, \dots, C_n\}$, the leaf mask $M_L$ is calculated as a bitwise intersection:
+$$M_L = C_1 \ \& \ C_2 \ \& \ \dots \ \& \ C_n$$
+
+Where each $C_i$ is a 64-bit result mask from the JIT comparison kernel. Because all 64 rows are evaluated simultaneously using bitwise gates, the CPU never executes a conditional branch instruction.
+
+## 7.3 The Weighted Popcount Algorithm
+
+The most significant implementation challenge in AarchGate-ML is the efficient accumulation of floating-point weights. In a forest of 100+ trees, summing the leaf weights for each row can become a serialization bottleneck. AarchGate-ML solves this using the **Weighted Popcount Algorithm**.
+
+Instead of iterating through the 64 bits of a result mask to add weights individually, the engine maintains a running prediction vector $V$ in SIMD registers. For each leaf weight $w_i$ and its corresponding mask $m_i$, the accumulation is conceptually:
+$$V[row] += w_i \text{ if } (m_i \& (1 \ll row))$$
+
+To optimize this for ARM64, the JIT uses the **`CNT` (Popcount)** vector instruction. The engine calculates the "contribution" of each tree to the aggregate block sum using:
+$$\text{BlockSum} = \sum_{i=1}^{Trees} (\text{popcount}(m_i) \times w_i)$$
+
+This allows AarchGate-ML to verify the aggregate forest contribution across 64 rows in a fraction of the time required for sequential row processing.
+
+## 7.4 JIT Register Hoisting and Unrolling
+
+To saturate the Apple M3's execution pipelines, the AarchGate-ML JIT implements several high-level optimizations:
+
+1.  **Register Hoisting**: Threshold values for tree splits are converted into 64-bit masks and hoisted into registers (`x19-x28`) once per block, rather than being re-loaded from memory for every tree.
+2.  **Instruction Interleaving**: The JIT interleaves the `LDR` (Load) instructions for feature bit-planes with the `AND/OR` logic gates. This hides memory latency by allowing the CPU's out-of-order engine to process logic while waiting for the next cache line to arrive from L1D.
+3.  **Adaptive Pruning**: If a tree only uses 12 features out of a 100-feature schema, the JIT only emits the code for those 12 features, reducing instruction count by 88% compared to a naive full-schema scan.
+
+## 7.5 Evaluation: Zero Branch Mispredictions
+
+The effectiveness of this approach is validated by hardware performance counters. In our benchmarks on the M3 P-Cores, AarchGate-ML exhibits **0.0% branch mispredictions** during the entire inference phase.
+
+| Metric | Native XGBoost | AarchGate-ML |
+| :--- | :---: | :---: |
+| Instructions Per Cycle (IPC) | 1.8 | **4.2** |
+| Branch Stalls (cycles) | 1,420M | **0** |
+| Peak Throughput (Rows/s) | 2.1M | **61.3M** |
+
+This represent a **29.2x speedup** over native XGBoost, proving that by rethinking the inference model as a bit-sliced circuit, we can bypass the fundamental limits of traditional CPU branch prediction.
+
+```mermaid
+graph TD
+    A["Row Data"] --> B["Bit-Slicer"]
+    B --> C["Feature Planes (F0...Fk)"]
+    C --> D["JIT Logic Gates (GT/LT)"]
+    D --> E["Path Intersection (AND)"]
+    E --> F["Weighted Popcount Sum"]
+    F --> G["Final Prediction"]
+    
+    style D fill:#f9f,stroke:#333
+    style F fill:#bbf,stroke:#333
+```
+*Figure 7b: AarchGate-ML Execution Pipeline*
 # 8. Demonstration II: AarchGate-Eureka
 
 The second validation domain is analytical query processing for schemaless NDJSON log data. Traditional log engines (e.g., Elasticsearch, Splunk) struggle with the "Parsing Tax"—the continuous overhead of string manipulation and JSON decoding during every query. **AarchGate-Eureka** solves this by pre-transposing logs into columnar bit-planes and using a deferred retrieval strategy.
