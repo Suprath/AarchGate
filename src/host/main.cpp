@@ -4,6 +4,9 @@
 #include "host/policy_engine.hpp"
 #include "host/vm_controller.h"
 #include "host/esf_manager.hpp"
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 #include <iostream>
 #include <vector>
 #include <queue>
@@ -34,6 +37,9 @@ void signal_handler(int signal) {
         std::cout << "\n[AarchGate Daemon] Shutting down daemon..." << std::endl;
         g_shutdown = true;
         g_shutdown_cv.notify_all();
+#if defined(__APPLE__)
+        CFRunLoopStop(CFRunLoopGetMain());
+#endif
     }
 }
 
@@ -137,6 +143,9 @@ private:
                 // Trigger global shutdown
                 g_shutdown = true;
                 g_shutdown_cv.notify_all();
+#if defined(__APPLE__)
+                CFRunLoopStop(CFRunLoopGetMain());
+#endif
                 break;
             }
         }
@@ -247,10 +256,14 @@ int main(int argc, char* argv[]) {
     std::cout << "[AarchGate Daemon] Sandbox daemon is fully initialized and guarding npm workspace." << std::endl;
     
     // Wait until shutdown signal
+#if defined(__APPLE__)
+    CFRunLoopRun();
+#else
     std::unique_lock<std::mutex> lock(g_cv_mutex);
     g_shutdown_cv.wait(lock, []() {
         return g_shutdown.load();
     });
+#endif
 
     // 7. Cleanup
     std::cout << "[AarchGate Daemon] Shutting down sandbox services..." << std::endl;

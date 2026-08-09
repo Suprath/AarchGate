@@ -11,6 +11,8 @@
 #include "vsock_protocol.h"
 #include "tracer.skel.h"
 
+using namespace aarchgate;
+
 // Define MTE constants if they are not present in older Linux header files
 #ifndef PR_SET_TAGGED_ADDR_CTRL
 #define PR_SET_TAGGED_ADDR_CTRL 55

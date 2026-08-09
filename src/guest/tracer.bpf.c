@@ -1,9 +1,20 @@
 // (c) 2026 Suprath PS. All rights reserved.
 // AarchGate: guest eBPF Tracer (Linux Kernel Hook)
 
+// Redirect conflicting system macros before including vmlinux.h
+#define AFFINITY BPF_AFFINITY
 #include "vmlinux.h"
+#undef AFFINITY
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
+
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
 
 // Matches SyscallEvent in vsock_protocol.h
 struct syscall_event_t {
