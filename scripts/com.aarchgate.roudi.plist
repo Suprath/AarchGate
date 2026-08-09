@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AarchGate launchd service — installs as:
+  ~/Library/LaunchAgents/com.aarchgate.roudi.plist
+
+  Install:  cp com.aarchgate.roudi.plist ~/Library/LaunchAgents/
+            launchctl load ~/Library/LaunchAgents/com.aarchgate.roudi.plist
+
+  This keeps iox-roudi running permanently in the background
+  so the sandbox is always ready — zero startup wait for developers.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aarchgate.roudi</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/iox-roudi</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/aarchgate-roudi.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/aarchgate-roudi.log</string>
+</dict>
+</plist>
