@@ -36,11 +36,13 @@ fi
 echo "[Builder] Copying guest agent to ramdisk..."
 cp "$AGENT_SRC" "$WORKDIR/usr/bin/"
 
-# 4. Write custom init script
+# 4. Inject custom sbin/init boot script
 echo "[Builder] Injecting custom sbin/init boot script..."
 rm -f "$WORKDIR/sbin/init"
 cat << 'EOF' > "$WORKDIR/sbin/init"
 #!/bin/sh
+# Mount essential virtual filesystems
+mount -t devtmpfs devtmpfs /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t debugfs debugfs /sys/kernel/debug
