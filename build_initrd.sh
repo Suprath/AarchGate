@@ -93,11 +93,24 @@ mount -t tmpfs tmpfs /tmp
 
 # Load Virtio-fs kernel module (FUSE is built-in)
 insmod /lib/modules/virtiofs.ko
-
+ 
+# Setup network interface to allow Node/npm package downloads
+ip link set eth0 up
+udhcpc -i eth0
+mkdir -p /etc
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+ 
 # Mount the macOS shared workspace folder using the tag from vm_controller.mm
 mkdir -p /workspace
 mount -t virtiofs aarchgate_share /workspace
-
+ 
+# Install Node and npm inside the VM environment
+echo "[Guest Init] Installing Node.js and npm..."
+echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories
+echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
+apk update
+apk add nodejs npm libstdc++ libbpf elfutils-libelf
+ 
 # Start the AarchGate guest telemetry agent in the background
 /usr/bin/aarchgate_agent &
 
