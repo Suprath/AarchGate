@@ -114,14 +114,20 @@ SyscallTraceRecord PolicyEngine::process_event(const SyscallEvent& event) {
     // 2. Policy Classification
     if (event.event_type == EVENT_OPEN) {
         // Classify sensitive paths
-        // Match home-level credentials or config files (.ssh, .aws, .env, .npmrc, .gitconfig)
+        // Match credential and config files — covers both /home/user and /root (Alpine default)
         bool has_sensitive_pattern = false;
-        if (arg.find(".ssh/") != std::string::npos ||
-            arg.find(".aws/") != std::string::npos ||
-            arg.find("aws/credentials") != std::string::npos ||
-            arg.find(".env") != std::string::npos ||
-            arg.find(".npmrc") != std::string::npos ||
-            arg.find(".gitconfig") != std::string::npos) {
+        if (arg.find(".ssh/")              != std::string::npos ||
+            arg.find(".aws/")              != std::string::npos ||
+            arg.find("aws/credentials")    != std::string::npos ||
+            arg.find(".env")               != std::string::npos ||
+            arg.find(".npmrc")             != std::string::npos ||
+            arg.find(".gitconfig")         != std::string::npos ||
+            arg.find("/etc/passwd")        != std::string::npos ||
+            arg.find("/etc/shadow")        != std::string::npos ||
+            arg.find("/proc/self/environ") != std::string::npos ||
+            arg.find("id_rsa")             != std::string::npos ||
+            arg.find("id_ed25519")         != std::string::npos ||
+            arg.find("authorized_keys")    != std::string::npos) {
             has_sensitive_pattern = true;
         }
         rec.is_sensitive = has_sensitive_pattern ? 1 : 0;
