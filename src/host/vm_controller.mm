@@ -22,7 +22,7 @@
 
 @implementation VZVsockDelegate
 
-- (BOOL)listener:(VZVirtioSocketListener *)listener shouldAcceptNewConnection:(VZVirtioSocketConnection *)connection from:(VZVirtioSocketDevice *)socketDevice {
+- (BOOL)listener:(VZVirtioSocketListener *)listener shouldAcceptNewConnection:(VZVirtioSocketConnection *)connection fromSocketDevice:(VZVirtioSocketDevice *)socketDevice {
     (void)listener;
     (void)socketDevice;
     if (self.connectionHandler) {
