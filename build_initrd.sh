@@ -84,6 +84,10 @@ zstd -d lib/modules/6.8.9-060809-generic/kernel/net/vmw_vsock/vmw_vsock_virtio_t
 zstd -d lib/modules/6.8.9-060809-generic/kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko.zst -o "$WORKDIR/lib/modules/vmw_vsock_virtio_transport.ko"
 rm -rf "$MODULES_DIR"
  
+# Write current macOS host time to sync the guest VM clock
+echo "[Builder] Writing build time to sync system clock..."
+date -u +"%Y-%m-%d %H:%M:%S" > "$WORKDIR/etc/build_time"
+
 # 6. Inject custom sbin/init boot script (with module loading!)
 echo "[Builder] Injecting custom sbin/init boot script..."
 rm -f "$WORKDIR/sbin/init"
@@ -95,6 +99,11 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t debugfs debugfs /sys/kernel/debug
 mount -t tmpfs tmpfs /tmp
+ 
+# Synchronize system time to prevent SSL/TLS certificate errors
+if [ -f /etc/build_time ]; then
+    date -s "$(cat /etc/build_time)"
+fi
  
 # Load Virtio-fs kernel module (FUSE is built-in)
 insmod /lib/modules/virtiofs.ko
