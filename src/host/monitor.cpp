@@ -156,7 +156,9 @@ void render_dashboard(const TelemetryModel& model) {
         std::cout << GREEN << BOLD << "[RUNNING] " << RESET << "(" << model.vm_status_desc << ")\n";
     } else {
         if (model.total_violations > 0) {
-            std::cout << RED << BOLD << "[KILLED] " << RESET << "(" << model.vm_status_desc << ")\n";
+            std::cout << RED << BOLD << "[KILLED]  " << RESET << "(" << model.vm_status_desc << ")\n";
+        } else if (model.logs.empty() && model.total_execs == 0) {
+            std::cout << YELLOW << BOLD << "[WAITING] " << RESET << "(Waiting for aarchgate_daemon to connect...)\n";
         } else {
             std::cout << WHITE << BOLD << "[OFFLINE] " << RESET << "(" << model.vm_status_desc << ")\n";
         }
@@ -239,11 +241,13 @@ int main() {
     });
 
     TelemetryModel model;
-    
-    // Clear screen initially
-    std::cout << CLEAR_SCR << std::flush;
 
-    // 3. Polling loop
+    // Clear screen and render initial "waiting" dashboard immediately
+    std::cout << CLEAR_SCR << std::flush;
+    render_dashboard(model);
+
+    // 3. Polling loop - refresh every 500ms regardless of events
+    auto last_render = std::chrono::steady_clock::now();
     while (!g_stop) {
         bool updated = false;
 
@@ -259,11 +263,14 @@ int main() {
             updated = true;
         }
 
-        if (updated) {
+        // Re-render if new events arrived OR every 500ms for live clock/status
+        auto now = std::chrono::steady_clock::now();
+        if (updated || std::chrono::duration_cast<std::chrono::milliseconds>(now - last_render).count() >= 500) {
             render_dashboard(model);
+            last_render = now;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     // Restore terminal cursor on exit
