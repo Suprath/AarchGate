@@ -275,6 +275,11 @@ if(APPLE)
     endif()
     
     install(TARGETS aarchgate_daemon DESTINATION bin)
+    
+    add_custom_command(TARGET aarchgate_daemon POST_BUILD
+        COMMAND codesign --entitlements ${CMAKE_CURRENT_SOURCE_DIR}/entitlements.plist --force --sign - $<TARGET_FILE:aarchgate_daemon>
+        COMMENT "Ad-hoc codesigning aarchgate_daemon with Virtualization entitlements"
+    )
 
     add_executable(aarchgate_monitor
         src/host/monitor.cpp
