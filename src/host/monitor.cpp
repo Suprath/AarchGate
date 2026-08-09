@@ -190,25 +190,43 @@ void render_dashboard(const TelemetryModel& model) {
         std::cout << "  Awaiting syscall telemetry stream...\n";
     } else {
         for (const auto& log : model.logs) {
+            // Trim comm to 15 chars (TASK_COMM_LEN) for clean display
+            std::string comm = std::string(log.comm).substr(0, 15);
+
             std::cout << "  ";
             if (log.event_type == EVENT_MTE_TRAP) {
-                std::cout << BG_RED << BOLD << "[MTE TRAP]" << RESET << " Process " << RED << log.comm << RESET 
+                std::cout << BG_RED << BOLD << "[MTE TRAP]   " << RESET << " " << RED << comm << RESET
                           << " violated hardware tags at " << RED << log.arg_str << RESET << "\n";
             } else if (log.is_sensitive && log.is_preinstall && log.event_type == EVENT_OPEN) {
-                std::cout << RED << BOLD << "[BLOCKED OPEN]" << RESET << " Preinstall script " << RED << log.comm << RESET 
-                          << " attempted to steal sensitive file: " << RED << log.arg_str << RESET << "\n";
+                std::cout << RED << BOLD << "[BLOCKED OPEN]  " << RESET << " preinstall " << RED << comm << RESET
+                          << " tried to read: " << RED << log.arg_str << RESET << "\n";
             } else if (log.is_unauthorized && log.is_preinstall && log.event_type == EVENT_CONNECT) {
-                std::cout << RED << BOLD << "[BLOCKED CONNECT]" << RESET << " Preinstall script " << RED << log.comm << RESET 
-                          << " attempted network exfiltration to: " << RED << log.arg_str << ":" << log.port << RESET << "\n";
+                std::cout << RED << BOLD << "[BLOCKED CONN]  " << RESET << " preinstall " << RED << comm << RESET
+                          << " exfil attempt: " << RED << log.arg_str << ":" << log.port << RESET << "\n";
             } else if (log.event_type == EVENT_EXEC) {
-                std::cout << GREEN << "[EXEC]   " << RESET << "PID " << log.pid << " " << BOLD << log.comm << RESET 
+                std::cout << GREEN << BOLD << "[EXEC]   " << RESET
+                          << " PID " << std::setw(5) << log.pid << " "
+                          << BOLD << std::left << std::setw(15) << comm << RESET
                           << " -> " << log.arg_str << "\n";
             } else if (log.event_type == EVENT_OPEN) {
-                std::cout << CYAN << "[OPEN]   " << RESET << "PID " << log.pid << " " << log.comm 
-                          << " read path: " << log.arg_str << "\n";
+                std::cout << CYAN << "[OPEN]   " << RESET
+                          << " PID " << std::setw(5) << log.pid << " "
+                          << std::left << std::setw(15) << comm
+                          << " path: " << log.arg_str << "\n";
             } else if (log.event_type == EVENT_CONNECT) {
-                std::cout << MAGENTA << "[CONNECT]" << RESET << " PID " << log.pid << " " << log.comm 
-                          << " socket connect: " << log.arg_str << ":" << log.port << "\n";
+                // Format IPv4 from uint32 if arg_str is empty
+                std::string dest = std::string(log.arg_str);
+                if (dest.empty() || dest == "other_connect") {
+                    uint32_t ip = log.ip_address;
+                    dest = std::to_string((ip >> 24) & 0xFF) + "." +
+                           std::to_string((ip >> 16) & 0xFF) + "." +
+                           std::to_string((ip >> 8)  & 0xFF) + "." +
+                           std::to_string(ip & 0xFF);
+                }
+                std::cout << MAGENTA << "[CONNECT]" << RESET
+                          << " PID " << std::setw(5) << log.pid << " "
+                          << std::left << std::setw(15) << comm
+                          << " -> " << dest << ":" << log.port << "\n";
             }
         }
     }
