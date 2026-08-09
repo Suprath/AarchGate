@@ -155,7 +155,9 @@ void render_dashboard(const TelemetryModel& model) {
     if (model.vm_running) {
         std::cout << GREEN << BOLD << "[RUNNING] " << RESET << "(" << model.vm_status_desc << ")\n";
     } else {
-        if (model.total_violations > 0) {
+        bool killed_by_policy = (model.total_violations > 0) ||
+                                (model.vm_status_desc.find("Kill Switch") != std::string::npos);
+        if (killed_by_policy) {
             std::cout << RED << BOLD << "[KILLED]  " << RESET << "(" << model.vm_status_desc << ")\n";
         } else if (model.logs.empty() && model.total_execs == 0) {
             std::cout << YELLOW << BOLD << "[WAITING] " << RESET << "(Waiting for aarchgate_daemon to connect...)\n";

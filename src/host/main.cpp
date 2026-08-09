@@ -87,7 +87,25 @@ public:
             std::cerr << "!!! TERMINATING MICRO-VM SANDBOX IMMEDIATELY...\n";
             std::cerr << std::string(80, '!') << "\n" << std::endl;
 
-            // Broadcast kill to monitor before stopping
+            // 1. Publish the individual violation event FIRST so monitor shows it
+            if (monitor_cb_) {
+                MonitorEvent mon_ev{};
+                mon_ev.timestamp_ns = event.timestamp_ns;
+                mon_ev.pid = event.pid;
+                mon_ev.ppid = event.ppid;
+                mon_ev.event_type = event.event_type;
+                std::strncpy(mon_ev.comm, event.comm, sizeof(mon_ev.comm));
+                std::strncpy(mon_ev.arg_str, event.arg_str, sizeof(mon_ev.arg_str));
+                mon_ev.ip_address = event.ip_address;
+                mon_ev.port = event.port;
+                mon_ev.is_preinstall = 1;
+                mon_ev.is_sensitive = record.is_sensitive;
+                mon_ev.is_unauthorized = record.is_unauthorized;
+                mon_ev.vm_running = 1;
+                monitor_cb_(mon_ev);
+            }
+
+            // 2. Then broadcast VM killed state change
             if (monitor_cb_) {
                 MonitorEvent stop_ev{};
                 stop_ev.event_type = EVENT_VM_STATE_CHANGE;
@@ -97,9 +115,13 @@ public:
                 monitor_cb_(stop_ev);
             }
 
-            vm_.stop();
-            g_shutdown = true;
-            g_shutdown_cv.notify_all();
+            // 3. Stop VM on a detached thread to avoid reader-thread self-join deadlock
+            std::thread([this]() {
+                vm_.stop();
+                g_shutdown = true;
+                g_shutdown_cv.notify_all();
+            }).detach();
+            return; // Exit add_event immediately — VM is being terminated
         }
 
         if (monitor_cb_) {
