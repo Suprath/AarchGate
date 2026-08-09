@@ -116,7 +116,7 @@ public:
                 bootloader.initialRamdiskURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:initrd_path.c_str()]];
             }
             // console=hvc0 connects guest console to the virtio channel. rdinit runs our agent.
-            bootloader.commandLine = @"console=hvc0 root=/dev/ram rdinit=/sbin/init quiet";
+            bootloader.commandLine = @"console=hvc0 root=/dev/ram rdinit=/sbin/init";
             config.bootLoader = bootloader;
 
             // 2. Configure Guest Hardware
@@ -140,14 +140,26 @@ public:
 
             VZVirtioSocketDeviceConfiguration* vsockConfig = [[VZVirtioSocketDeviceConfiguration alloc] init];
             config.socketDevices = @[vsockConfig];
+ 
+            // Configure Virtio NAT Network Device for guest internet access
+            VZNATNetworkDeviceAttachment* natAttachment = [[VZNATNetworkDeviceAttachment alloc] init];
+            VZVirtioNetworkDeviceConfiguration* networkConfig = [[VZVirtioNetworkDeviceConfiguration alloc] init];
+            networkConfig.attachment = natAttachment;
+            config.networkDevices = @[networkConfig];
 
-            // 5. Headless console routing
-            VZVirtioConsoleDeviceSerialPortConfiguration* serialConfig = [[VZVirtioConsoleDeviceSerialPortConfiguration alloc] init];
-            VZFileHandleSerialPortAttachment* attachment = [[VZFileHandleSerialPortAttachment alloc] 
-                initWithFileHandleForReading:[NSFileHandle fileHandleWithNullDevice] 
-                fileHandleForWriting:[NSFileHandle fileHandleWithNullDevice]];
-            serialConfig.attachment = attachment;
-            config.serialPorts = @[serialConfig];
+            // 5. Console logging to file for debugging guest boot
+            NSURL* consoleLogURL = [NSURL fileURLWithPath:@"/tmp/aarchgate_vm_console.log"];
+            [@"" writeToURL:consoleLogURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            VZFileSerialPortAttachment* attachment = [[VZFileSerialPortAttachment alloc] initWithURL:consoleLogURL append:NO error:&error];
+            if (attachment) {
+                VZVirtioConsoleDeviceSerialPortConfiguration* serialConfig = [[VZVirtioConsoleDeviceSerialPortConfiguration alloc] init];
+                serialConfig.attachment = attachment;
+                config.serialPorts = @[serialConfig];
+            } else {
+                std::cerr << "[AarchGate VMController] Failed to create console log attachment: " 
+                          << [error.localizedDescription UTF8String] << std::endl;
+                config.serialPorts = @[];
+            }
 
             // Validate configuration
             if (![config validateWithError:&error]) {
@@ -222,8 +234,6 @@ public:
             if (vm) {
                 // Use std::shared_ptr to safely share synchronization state across languages
                 auto stop_done = std::make_shared<bool>(false);
-                auto stop_mutex = std::make_shared<std::mutex>();
-                auto stop_cv = std::make_shared<std::condition_variable>();
 
                 [vm stopWithCompletionHandler:^(NSError * _Nullable stopError) {
                     if (stopError) {
@@ -232,16 +242,13 @@ public:
                     } else {
                         std::cout << "[AarchGate VMController] VM stopped." << std::endl;
                     }
-                    {
-                        std::lock_guard<std::mutex> lock(*stop_mutex);
-                        *stop_done = true;
-                    }
-                    stop_cv->notify_all();
+                    *stop_done = true;
                 }];
 
-                // Block caller thread until async stop completes
-                std::unique_lock<std::mutex> lock(*stop_mutex);
-                stop_cv->wait(lock, [stop_done]() { return *stop_done; });
+                // Spin-wait while running the main run loop to allow GCD block to execute
+                while (!*stop_done) {
+                    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+                }
                 vm = nil;
             }
             vsock_listener = nil;
