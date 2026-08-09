@@ -77,8 +77,13 @@ tar -xf data.tar
 # Copy and decompress the required module: virtiofs.ko.zst
 mkdir -p "$WORKDIR/lib/modules"
 zstd -d lib/modules/6.8.9-060809-generic/kernel/fs/fuse/virtiofs.ko.zst -o "$WORKDIR/lib/modules/virtiofs.ko"
+ 
+# Copy and decompress VSOCK modules
+zstd -d lib/modules/6.8.9-060809-generic/kernel/net/vmw_vsock/vsock.ko.zst -o "$WORKDIR/lib/modules/vsock.ko"
+zstd -d lib/modules/6.8.9-060809-generic/kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst -o "$WORKDIR/lib/modules/vmw_vsock_virtio_transport_common.ko"
+zstd -d lib/modules/6.8.9-060809-generic/kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko.zst -o "$WORKDIR/lib/modules/vmw_vsock_virtio_transport.ko"
 rm -rf "$MODULES_DIR"
-
+ 
 # 6. Inject custom sbin/init boot script (with module loading!)
 echo "[Builder] Injecting custom sbin/init boot script..."
 rm -f "$WORKDIR/sbin/init"
@@ -90,13 +95,23 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t debugfs debugfs /sys/kernel/debug
 mount -t tmpfs tmpfs /tmp
-
+ 
 # Load Virtio-fs kernel module (FUSE is built-in)
 insmod /lib/modules/virtiofs.ko
  
-# Setup network interface to allow Node/npm package downloads
-ip link set eth0 up
-udhcpc -i eth0
+# Load VSOCK protocol and transport modules
+insmod /lib/modules/vsock.ko
+insmod /lib/modules/vmw_vsock_virtio_transport_common.ko
+insmod /lib/modules/vmw_vsock_virtio_transport.ko
+ 
+# Setup network interface dynamically to allow Node/npm package downloads
+for dev in /sys/class/net/*; do
+    if [ "$dev" != "/sys/class/net/lo" ] && [ -d "$dev" ]; then
+        iface=$(basename "$dev")
+        ip link set "$iface" up
+        udhcpc -i "$iface"
+    fi
+done
 mkdir -p /etc
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
  
