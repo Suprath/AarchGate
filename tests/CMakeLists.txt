@@ -118,3 +118,43 @@ if(APPLE)
     target_compile_options(test_metal_throughput PRIVATE ${APEX_COMPILE_FLAGS})
     add_test(NAME MetalThroughputTests COMMAND test_metal_throughput)
 endif()
+
+# Sandbox Policy Engine tests
+add_executable(test_policy_engine test_policy_engine.cpp)
+target_include_directories(test_policy_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(test_policy_engine PRIVATE aarchgate)
+target_compile_options(test_policy_engine PRIVATE ${APEX_COMPILE_FLAGS})
+if(asmjit_FOUND)
+    target_compile_definitions(test_policy_engine PRIVATE APEX_HAS_ASMJIT)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../external/asmjit")
+        target_include_directories(test_policy_engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../external/asmjit")
+    endif()
+endif()
+add_test(NAME PolicyEngineTests COMMAND test_policy_engine)
+
+if(APPLE)
+    add_executable(test_integration_sandbox
+        test_integration_sandbox.cpp
+        ../src/host/vm_controller.mm
+        ../src/host/esf_manager.cpp
+    )
+    target_include_directories(test_integration_sandbox PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    )
+    target_link_libraries(test_integration_sandbox PRIVATE
+        aarchgate
+        "-framework Virtualization"
+        EndpointSecurity
+        "-framework Foundation"
+    )
+    target_compile_options(test_integration_sandbox PRIVATE ${APEX_COMPILE_FLAGS})
+    if(asmjit_FOUND)
+        target_compile_definitions(test_integration_sandbox PRIVATE APEX_HAS_ASMJIT)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../external/asmjit")
+            target_include_directories(test_integration_sandbox PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../external/asmjit")
+        endif()
+    endif()
+    add_test(NAME IntegrationSandboxTests COMMAND test_integration_sandbox)
+endif()

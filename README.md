@@ -886,3 +886,59 @@ Multi-bit arithmetic evaluations (`ADD`, `SUB`) across bit-sliced streams use a 
 - Consult `tests/` for correctness verification examples
 - File issues with platform details and reproduction steps
 
+---
+
+## AarchGate npm Sandbox: Zero-Trust Runtime
+
+AarchGate integrates a hardware-assisted, split-plane security sandbox designed to prevent "Wormable" supply-chain attacks (such as credential harvesting or shell injection) during the `npm install` lifecycle.
+
+### Architecture
+
+```
+┌──────────────────────────────────────┐          ┌──────────────────────────────────────┐
+│       macOS Host (Control Plane)     │          │       Linux Guest (Sandbox Plane)    │
+│                                      │          │                                      │
+│  ┌───────────────┐  ┌─────────────┐  │  VSOCK   │  ┌───────────────┐  ┌─────────────┐  │
+│  │  npm Wrapper  ├─→│   Daemon    │  │◄─────────┼──┤  Guest Agent  │◄─┤ eBPF Hooks  │  │
+│  │    (iceoryx)  │  │ (JIT Engine)│  │ (10245)  │  │  (MTE Active) │  │(exec, open) │  │
+│  └───────────────┘  └──────┬──────┘  │          │  └───────────────┘  └─────────────┘  │
+│                            │ (Stop)  │          │                                      │
+│                            ▼         │          │                                      │
+│                    [VZVirtualMachine]│          │                                      │
+└──────────────────────────────────────┘          └──────────────────────────────────────┘
+```
+
+### Components
+
+1. **eBPF Tracer (`src/guest/tracer.bpf.c`)**: Hooks `sys_enter_execve`, `sys_enter_openat`, and `sys_enter_connect` syscalls inside the guest to intercept file and network operations.
+2. **Guest Agent (`src/guest/agent.cpp`)**: Configures **ARMv9 Memory Tagging Extension (MTE)** in user-space via `prctl` for memory safety traps. It reads syscall trace records from the lockless eBPF ring buffer and streams them over `AF_VSOCK` to the host.
+3. **Host Daemon (`src/host/main.cpp`)**: Coordinates VM lifecycle, intercepts direct host-level runs using the **macOS Endpoint Security Framework (ESF)**, and implements Pointer Authentication Code (PAC) compiler protection.
+4. **JIT Policy Engine (`src/host/policy_engine.cpp`)**: Transposes incoming telemetry in batches of 64 and runs JIT-compiled policy evaluations:
+   `is_preinstall & ((event_type == OPEN & is_sensitive) | (event_type == CONNECT & is_unauthorized))`
+   It triggers a hypervisor-level kill switch immediately upon violation detection.
+
+### Building & Running
+
+To build both host components:
+```bash
+./build.sh --clean --release --test
+```
+
+To run the host daemon in mock mode (simulates VM telemetry):
+```bash
+./build/aarchgate_daemon --kernel mock
+```
+
+To build guest components on the Linux guest VM:
+```bash
+cd src/guest
+make
+```
+
+### Verifying Integration
+
+Execute the end-to-end sandbox verification test:
+```bash
+./build/tests/test_integration_sandbox
+```
+

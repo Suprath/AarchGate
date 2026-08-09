@@ -48,6 +48,7 @@ set(APEX_SOURCES
     src/api/engine.cpp
     src/api/aarchgate_c_api.cpp
     src/telemetry/telemetry.cpp
+    src/host/policy_engine.cpp
 )
 
 if(APPLE)
@@ -57,7 +58,7 @@ endif()
 # OBJECT library: shared compilation unit for linking into both SHARED and EXECUTABLE
 add_library(apex_obj OBJECT ${APEX_SOURCES})
 target_compile_options(apex_obj PRIVATE ${APEX_COMPILE_FLAGS})
-target_include_directories(apex_obj PUBLIC include PRIVATE src)
+target_include_directories(apex_obj PUBLIC include PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR})
 
 # (FlatBuffers generation moved to examples/trading)
 
@@ -97,7 +98,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/iceoryx/iceoryx_platform/CMakeLi
     set(IOX_BUILD_EXAMPLES OFF CACHE BOOL "Disable iceoryx examples")
     
     # Optional ACL support (Defaults to ON for compatibility, but can be disabled)
-    option(IOX_PLATFORM_FEATURE_ACL "Enable iceoryx ACL support" ON)
+    if(APPLE)
+        option(IOX_PLATFORM_FEATURE_ACL "Enable iceoryx ACL support" OFF)
+    else()
+        option(IOX_PLATFORM_FEATURE_ACL "Enable iceoryx ACL support" ON)
+    endif()
     
     set(IOX_VERSION_STRING "2.0.0" CACHE STRING "iceoryx version string")
     # Build platform first (dependency of hoofs)
@@ -116,7 +121,7 @@ else()
 endif()
 
 # FlatBuffers - Serialization (with flatc compiler)
-option(APEX_BUILD_FLATBUFFERS "Build FlatBuffers support" ON)
+option(APEX_BUILD_FLATBUFFERS "Build FlatBuffers support" OFF)
 if(APEX_BUILD_FLATBUFFERS)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/flatbuffers/CMakeLists.txt")
         message(STATUS "Building FlatBuffers from submodule")
@@ -230,7 +235,7 @@ if(APEX_BUILD_PYTHON)
     add_subdirectory(bindings/python)
 endif()
 
-option(APEX_BUILD_JAVA "Build Java bindings" ON)
+option(APEX_BUILD_JAVA "Build Java bindings" OFF)
 if(APEX_BUILD_JAVA)
     add_subdirectory(bindings/java)
 endif()
@@ -239,3 +244,53 @@ endif()
 set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/dist")
 install(TARGETS aarchgate DESTINATION lib)
 install(FILES include/apex/apex_c_api.h include/apex/AarchGate.hpp DESTINATION include)
+
+if(APPLE)
+    add_executable(aarchgate_daemon
+        src/host/main.cpp
+        src/host/esf_manager.cpp
+        src/host/vm_controller.mm
+    )
+    target_include_directories(aarchgate_daemon PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/include 
+        ${CMAKE_CURRENT_SOURCE_DIR}/src 
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(aarchgate_daemon PRIVATE 
+        aarchgate 
+        "-framework Virtualization" 
+        EndpointSecurity 
+        "-framework Foundation"
+        iceoryx_hoofs
+        iceoryx_posh
+    )
+    target_compile_options(aarchgate_daemon PRIVATE ${APEX_COMPILE_FLAGS} "-mbranch-protection=standard")
+    target_compile_definitions(aarchgate_daemon PRIVATE APEX_HAS_ICEORYX)
+    
+    if(asmjit_FOUND)
+        target_compile_definitions(aarchgate_daemon PRIVATE APEX_HAS_ASMJIT)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/asmjit")
+            target_include_directories(aarchgate_daemon PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/external/asmjit")
+        endif()
+    endif()
+    
+    install(TARGETS aarchgate_daemon DESTINATION bin)
+
+    add_executable(aarchgate_monitor
+        src/host/monitor.cpp
+    )
+    target_include_directories(aarchgate_monitor PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/include 
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(aarchgate_monitor PRIVATE 
+        aarchgate 
+        "-framework Foundation"
+        iceoryx_hoofs
+        iceoryx_posh
+    )
+    target_compile_options(aarchgate_monitor PRIVATE ${APEX_COMPILE_FLAGS} "-mbranch-protection=standard")
+    target_compile_definitions(aarchgate_monitor PRIVATE APEX_HAS_ICEORYX)
+    
+    install(TARGETS aarchgate_monitor DESTINATION bin)
+endif()
