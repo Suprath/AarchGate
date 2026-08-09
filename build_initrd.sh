@@ -1,11 +1,11 @@
 #!/bin/bash
 # (c) 2026 Suprath PS. All rights reserved.
-# AarchGate: guest initrd.img Builder Script
+# AarchGate: guest initrd.img Builder Script with Ubuntu modules
 
 set -e
 
 echo "========================================================"
-echo "         AarchGate Guest Initrd Builder                 "
+echo "    AarchGate Guest Initrd & Kernel Setup Script        "
 echo "========================================================"
 
 WORKDIR="/tmp/aarchgate_initrd_root"
@@ -23,7 +23,7 @@ else
     echo "[Builder] Found existing Alpine minirootfs archive at $MINIROOTFS_PATH"
 fi
 
-# 2. Extract rootfs
+# 2. Extract minirootfs
 echo "[Builder] Extracting rootfs..."
 tar -C "$WORKDIR" -xf "$MINIROOTFS_PATH"
 
@@ -36,7 +36,50 @@ fi
 echo "[Builder] Copying guest agent to ramdisk..."
 cp "$AGENT_SRC" "$WORKDIR/usr/bin/"
 
-# 4. Inject custom sbin/init boot script
+# 4. Download and extract flat Ubuntu kernel Image (PE32 format is incompatible)
+DEB_IMAGE_URL="https://kernel.ubuntu.com/~kernel-ppa/mainline/v6.8.9/arm64/linux-image-unsigned-6.8.9-060809-generic_6.8.9-060809.202501292017_arm64.deb"
+DEB_IMAGE_PATH="/tmp/linux-image.deb"
+
+if [ ! -f "$DEB_IMAGE_PATH" ]; then
+    echo "[Builder] Downloading Ubuntu kernel Image package (17 MB)..."
+    curl -L -o "$DEB_IMAGE_PATH" "$DEB_IMAGE_URL"
+fi
+
+echo "[Builder] Extracting and decompressing Ubuntu flat kernel Image..."
+rm -rf /tmp/extracted_image
+mkdir -p /tmp/extracted_image
+cd /tmp/extracted_image
+ar x "$DEB_IMAGE_PATH"
+tar -xf data.tar
+mv boot/vmlinuz-6.8.9-060809-generic /Users/suprathps/vmlinuz.img.gz
+# Force overwrite if vmlinuz.img exists
+rm -f /Users/suprathps/vmlinuz.img
+gzip -d /Users/suprathps/vmlinuz.img.gz
+rm -rf /tmp/extracted_image
+
+# 5. Download and extract separate Ubuntu modules package
+DEB_MODULES_URL="https://kernel.ubuntu.com/~kernel-ppa/mainline/v6.8.9/arm64/linux-modules-6.8.9-060809-generic_6.8.9-060809.202501292017_arm64.deb"
+DEB_MODULES_PATH="/tmp/linux-modules.deb"
+MODULES_DIR="/tmp/extracted_modules"
+
+if [ ! -f "$DEB_MODULES_PATH" ]; then
+    echo "[Builder] Downloading Ubuntu modules package (30 MB)..."
+    curl -L -o "$DEB_MODULES_PATH" "$DEB_MODULES_URL"
+fi
+
+echo "[Builder] Extracting FUSE and Virtio-fs modules..."
+rm -rf "$MODULES_DIR"
+mkdir -p "$MODULES_DIR"
+cd "$MODULES_DIR"
+ar x "$DEB_MODULES_PATH"
+tar -xf data.tar
+
+# Copy and decompress the required module: virtiofs.ko.zst
+mkdir -p "$WORKDIR/lib/modules"
+zstd -d lib/modules/6.8.9-060809-generic/kernel/fs/fuse/virtiofs.ko.zst -o "$WORKDIR/lib/modules/virtiofs.ko"
+rm -rf "$MODULES_DIR"
+
+# 6. Inject custom sbin/init boot script (with module loading!)
 echo "[Builder] Injecting custom sbin/init boot script..."
 rm -f "$WORKDIR/sbin/init"
 cat << 'EOF' > "$WORKDIR/sbin/init"
@@ -47,6 +90,9 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t debugfs debugfs /sys/kernel/debug
 mount -t tmpfs tmpfs /tmp
+
+# Load Virtio-fs kernel module (FUSE is built-in)
+insmod /lib/modules/virtiofs.ko
 
 # Mount the macOS shared workspace folder using the tag from vm_controller.mm
 mkdir -p /workspace
@@ -68,13 +114,13 @@ EOF
 
 chmod +x "$WORKDIR/sbin/init"
 
-# 5. Package as initrd
+# 7. Package as initrd
 echo "[Builder] Packaging initrd.img to /Users/suprathps/initrd.img..."
 cd "$WORKDIR"
 find . | cpio -o -H newc | gzip -9 > /Users/suprathps/initrd.img
 
-# 6. Cleanup
+# 8. Cleanup
 rm -rf "$WORKDIR"
 echo "========================================================"
-echo "✓ SUCCESS: initrd.img created at /Users/suprathps/initrd.img"
+echo "✓ SUCCESS: Kernel decompressed and initrd.img packaged!"
 echo "========================================================"
