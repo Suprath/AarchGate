@@ -53,6 +53,13 @@ mount -t virtiofs aarchgate_share /workspace
 # Start the AarchGate guest telemetry agent in the background
 /usr/bin/aarchgate_agent &
 
+# Execute automated test script if present in workspace
+if [ -f /workspace/run.sh ]; then
+    echo "[Guest Init] Executing sandboxed script /workspace/run.sh..."
+    chmod +x /workspace/run.sh
+    /workspace/run.sh
+fi
+
 # Keep the virtual machine open and running
 exec /bin/sh
 EOF
