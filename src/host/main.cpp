@@ -64,6 +64,44 @@ public:
         // Process process tree updates and classify immediately
         SyscallTraceRecord record = pe_.process_event(event);
 
+        // ── Immediate Kill-Switch Fast-Path ──────────────────────────────────
+        // Do NOT wait for the 64-record JIT batch. If any single event is a
+        // confirmed policy violation, kill the VM right now.
+        bool is_violation = (record.is_preinstall == 1) &&
+                            ((record.is_sensitive == 1 && record.event_type == EVENT_OPEN) ||
+                             (record.is_unauthorized == 1 && record.event_type == EVENT_CONNECT));
+
+        if (is_violation && vm_.is_running()) {
+            std::cerr << "\n" << std::string(80, '!') << "\n";
+            std::cerr << "!!! CRITICAL SECURITY ALERT: POLICY VIOLATION DETECTED\n";
+            std::cerr << "!!! Process '" << event.comm << "' (PID " << event.pid << ") is a preinstall script\n";
+            if (record.is_sensitive) {
+                std::cerr << "!!! Attempted to READ sensitive file: " << event.arg_str << "\n";
+            } else {
+                uint32_t ip = event.ip_address;
+                std::cerr << "!!! Attempted NETWORK EXFILTRATION to: "
+                          << ((ip >> 24) & 0xFF) << "." << ((ip >> 16) & 0xFF) << "."
+                          << ((ip >> 8)  & 0xFF) << "." << (ip & 0xFF)
+                          << ":" << event.port << "\n";
+            }
+            std::cerr << "!!! TERMINATING MICRO-VM SANDBOX IMMEDIATELY...\n";
+            std::cerr << std::string(80, '!') << "\n" << std::endl;
+
+            // Broadcast kill to monitor before stopping
+            if (monitor_cb_) {
+                MonitorEvent stop_ev{};
+                stop_ev.event_type = EVENT_VM_STATE_CHANGE;
+                std::strcpy(stop_ev.comm, "system");
+                std::strcpy(stop_ev.arg_str, "Virtual Machine Terminated (Security Kill Switch)");
+                stop_ev.vm_running = 0;
+                monitor_cb_(stop_ev);
+            }
+
+            vm_.stop();
+            g_shutdown = true;
+            g_shutdown_cv.notify_all();
+        }
+
         if (monitor_cb_) {
             MonitorEvent mon_ev{};
             mon_ev.timestamp_ns = event.timestamp_ns;
